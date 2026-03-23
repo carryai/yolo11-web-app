@@ -72,7 +72,7 @@ await registerRoutes(fastify, modelManager, streamManager, logger);
 // WebSocket route
 fastify.register(async (fastify) => {
   fastify.get('/ws/detection', { websocket: true }, (connection, req) => {
-    wsHandler.handleConnection(connection.socket, req);
+    wsHandler.handleConnection(connection as any, req);
   });
 });
 

@@ -1,7 +1,6 @@
 export class WebRTCPlayer {
   private pc: RTCPeerConnection | null = null;
   private videoElement: HTMLVideoElement | null = null;
-  private dataChannel: RTCDataChannel | null = null;
   private stream: MediaStream | null = null;
   private isConnected = false;
 

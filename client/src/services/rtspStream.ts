@@ -77,9 +77,10 @@ export class RTSPStreamService {
           // Attempt reconnection if we were connected
           if (this.streamId && this.reconnectAttempts < this.maxReconnectAttempts && this.rtspUrl) {
             this.reconnectAttempts++;
+            const rtspUrl = this.rtspUrl;
             setTimeout(() => {
               console.log(`Attempting reconnection (${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
-              this.connect(this.rtspUrl).catch(() => {});
+              this.connect(rtspUrl).catch(() => {});
             }, this.reconnectDelay * this.reconnectAttempts);
           }
         };

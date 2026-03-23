@@ -1,6 +1,4 @@
 export class RTSPMJPEGPlayer {
-  private mediaSource: MediaSource | null = null;
-  private sourceBuffer: SourceBuffer | null = null;
   private videoElement: HTMLVideoElement | null = null;
   private streamUrl: string | null = null;
   private isConnected = false;
@@ -51,7 +49,6 @@ export class RTSPMJPEGPlayer {
 
   private async readStream(stream: ReadableStream<Uint8Array>) {
     const reader = stream.getReader();
-    const chunks: Uint8Array[] = [];
     let buffer = new Uint8Array(0);
 
     try {
@@ -106,7 +103,7 @@ export class RTSPMJPEGPlayer {
   private displayFrame(jpegData: Uint8Array) {
     if (!this.videoElement) return;
 
-    const blob = new Blob([jpegData], { type: 'image/jpeg' });
+    const blob = new Blob([jpegData.buffer.slice(jpegData.byteOffset, jpegData.byteOffset + jpegData.byteLength) as ArrayBuffer], { type: 'image/jpeg' });
     const url = URL.createObjectURL(blob);
 
     const img = new Image();

@@ -93,6 +93,7 @@ export const ModelLibrary: React.FC<ModelLibraryProps> = ({ onClose, onLoadModel
             isDefault: false,
             uploadDate: Date.now(),
             usageCount: 0,
+            architecture: metadata.architecture,
           },
         });
         setShowClassEditor(true);
@@ -108,6 +109,7 @@ export const ModelLibrary: React.FC<ModelLibraryProps> = ({ onClose, onLoadModel
           isDefault: false,
           uploadDate: Date.now(),
           usageCount: 0,
+          architecture: metadata.architecture,
         };
 
         await saveModel(id, name, blobObj, modelMetadata);

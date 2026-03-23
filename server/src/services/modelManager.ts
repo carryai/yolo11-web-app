@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, rmSync } from 'fs';
+import { existsSync, mkdirSync, readdirSync, writeFileSync, rmSync } from 'fs';
 import { join } from 'path';
 import * as ort from 'onnxruntime-node';
 import { Logger } from 'pino';
@@ -95,7 +95,7 @@ export class ModelManager {
     return this.models.get(id) || null;
   }
 
-  async uploadModel(name: string, buffer: Buffer, mimetype: string, classes?: string[]): Promise<ModelInfo> {
+  async uploadModel(name: string, buffer: Buffer, _mimetype: string, classes?: string[]): Promise<ModelInfo> {
     const id = name.toLowerCase().replace(/[^a-z0-9]/g, '-');
     const filePath = join(MODELS_DIR, `${id}.onnx`);
 
@@ -223,6 +223,7 @@ export class ModelManager {
 
   /**
    * Extract metadata from ONNX model file
+   * Uses a simplified approach: runs a dummy inference to get output shape
    */
   private async extractModelMetadata(filePath: string): Promise<{
     name: string;
@@ -234,59 +235,55 @@ export class ModelManager {
     try {
       const session = await ort.InferenceSession.create(filePath, {
         executionProviders: ['cpu'],
-        graphOptimizationLevel: 'none',
+        graphOptimizationLevel: 'disabled',
       });
 
-      // Extract input shape
-      const inputName = session.inputNames[0];
-      const inputType = session.inputTypes[inputName];
+      // Default input shape for YOLO models
+      const inputShape: number[] = [1, 3, 640, 640];
 
-      let inputShape: number[] = [1, 3, 640, 640];
-      if (inputType === 'tensor') {
-        const tensorType = session.inputTypes[inputName] as ort.TensorType;
-        inputShape = tensorType.dims.map(d => d === -1 ? 1 : d);
-      }
-
-      // Extract output shape
-      const outputName = session.outputNames[0];
-      const outputType = session.outputTypes[outputName];
+      // Run a dummy inference with small input to get output shape
+      const dummyData = new Float32Array(1 * 3 * 64 * 64);
+      const dummyTensor = new ort.Tensor('float32', dummyData, [1, 3, 64, 64]);
 
       let outputShape: number[] = [1, 84, 8400];
-      if (outputType === 'tensor') {
-        const tensorType = session.outputTypes[outputName] as ort.TensorType;
-        outputShape = tensorType.dims.map(d => d === -1 ? 1 : d);
+      let numClasses = 80;
+
+      try {
+        const feeds: Record<string, ort.Tensor> = { [session.inputNames[0]]: dummyTensor };
+        const results = await session.run(feeds);
+
+        const outputName = session.outputNames[0];
+        const output = results[outputName];
+
+        if (output && output.dims && output.dims.length === 3) {
+          // Scale output from 64x64 input to expected 640x640 output
+          // For YOLOv8/v11/v12/v26: features dimension stays same, anchors scale
+          const [, features, _] = output.dims;
+
+          // Standard YOLO output at 640x640 has 8400 anchors
+          // At 64x64 input, anchors would be roughly 84 (8400/100)
+          // But we use the features dimension to calculate classes
+          numClasses = features - 4; // 4 bbox params + numClasses
+
+          // Use standard 640x640 output shape
+          outputShape = [1, features, 8400];
+        }
+      } catch (e) {
+        this.logger.warn({ error: e }, 'Dummy inference failed, using default output shape');
       }
 
-      // Calculate number of classes from output shape
-      let numClasses = 80;
-      if (outputShape.length === 3) {
-        const [, dim1, dim2] = outputShape;
-        // Detect format: [1, 84, 8400] (transposed) or [1, 8400, 84] (standard)
-        let numFeatures: number;
-        if (dim1 === 84 || (dim1 > 4 && dim1 < 200)) {
-          numFeatures = dim1;
-        } else if (dim2 === 84 || (dim2 > 4 && dim2 < 200)) {
-          numFeatures = dim2;
-        } else {
-          numFeatures = Math.max(dim1, dim2);
-        }
-        // numFeatures = 4 (bbox) + numClasses
-        numClasses = numFeatures - 4;
-      }
+      await session.release();
 
       // Generate class names
       let classes: string[];
       if (numClasses === 80) {
         classes = COCO_CLASSES;
       } else {
-        // Generate default names for custom classes
         classes = [];
         for (let i = 0; i < numClasses; i++) {
           classes.push(`class_${i}`);
         }
       }
-
-      await session.release();
 
       return {
         name: '',
@@ -306,13 +303,5 @@ export class ModelManager {
         classes: COCO_CLASSES,
       };
     }
-  }
-
-  private generateDefaultClasses(numClasses: number): string[] {
-    const classes: string[] = [];
-    for (let i = 0; i < numClasses; i++) {
-      classes.push(`class_${i}`);
-    }
-    return classes;
   }
 }

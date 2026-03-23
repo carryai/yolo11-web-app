@@ -18,6 +18,7 @@ export interface ModelInfo {
   isDefault: boolean;
   uploadDate?: number;
   usageCount: number;
+  architecture?: string; // Optional: model architecture type (e.g., 'yolo-custom-5cls')
 }
 
 export interface ModelMetadata {
