@@ -35,7 +35,7 @@ export const Header: React.FC<HeaderProps> = ({ stats, onOpenModelLibrary, onOpe
         </div>
         <div>
           <h1 className="text-xl font-semibold">
-            YOLO11 <span className="text-accent-blue">Detect</span>
+            Yolo11/26 &amp; Custom <span className="text-accent-blue">Detection</span> <span className="text-xs text-text-secondary ml-2">(by CarryAI)</span>
           </h1>
           <div className="flex items-center gap-2">
             {currentModel && (

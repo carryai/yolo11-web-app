@@ -33,8 +33,10 @@ export const ModelLibrary: React.FC<ModelLibraryProps> = ({ onClose, onLoadModel
   const loadModels = async () => {
     try {
       const savedModels = await getAllModels();
+      console.log('Loaded from IndexedDB:', savedModels.map(m => ({ id: m.id, classes: m.classes })));
       // Combine with default models
       const allModels = [...DEFAULT_MODELS, ...savedModels.filter(m => !DEFAULT_MODELS.find(dm => dm.id === m.id))];
+      console.log('All models:', allModels.map(m => ({ id: m.id, classes: m.classes })));
       setModels(allModels);
     } catch (error) {
       console.error('Failed to load models:', error);
