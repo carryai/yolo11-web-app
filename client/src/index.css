@@ -1,0 +1,122 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg-primary: #0f0f0f;
+  --bg-secondary: #1a1a1a;
+  --bg-tertiary: #252525;
+  --text-primary: #ffffff;
+  --text-secondary: #a0a0a0;
+  --accent-blue: #3b82f6;
+  --accent-green: #10b981;
+  --accent-red: #ef4444;
+  --accent-orange: #f59e0b;
+  --accent-purple: #8b5cf6;
+  --border-color: #333333;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  min-height: 100vh;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--bg-secondary);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--bg-tertiary);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #404040;
+}
+
+/* Detection box animations */
+@keyframes detectionFadeIn {
+  from {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.detection-box {
+  animation: detectionFadeIn 0.2s ease-out;
+}
+
+/* Button hover effects */
+.btn-primary {
+  @apply bg-[#3b82f6] text-white px-4 py-2 rounded-lg font-medium transition-all duration-200;
+}
+
+.btn-primary:hover {
+  @apply bg-blue-600;
+}
+
+.btn-success {
+  @apply bg-[#10b981] text-white px-4 py-2 rounded-lg font-medium transition-all duration-200;
+}
+
+.btn-success:hover {
+  @apply bg-green-600;
+}
+
+.btn-danger {
+  @apply bg-[#ef4444] text-white px-4 py-2 rounded-lg font-medium transition-all duration-200;
+}
+
+.btn-danger:hover {
+  @apply bg-red-600;
+}
+
+/* Input styles */
+.input-dark {
+  @apply bg-[#252525] border border-[#333333] rounded-lg px-3 py-2 text-white focus:outline-none focus:border-[#3b82f6] transition-colors;
+}
+
+/* Card styles */
+.card {
+  @apply bg-[#1a1a1a] border border-[#333333] rounded-xl p-4;
+}
+
+/* Toggle switch */
+.toggle-switch {
+  @apply relative inline-flex h-6 w-11 items-center rounded-full bg-[#252525] transition-colors;
+}
+
+.toggle-switch:checked {
+  @apply bg-accent-blue;
+}
+
+.toggle-switch:focus {
+  @apply outline-none ring-2 ring-accent-blue ring-offset-2 ring-offset-[#0f0f0f];
+}
+
+.toggle-switch::before {
+  content: '';
+  @apply absolute left-1 top-1 h-4 w-4 rounded-full bg-white transition-transform;
+}
+
+.toggle-switch:checked::before {
+  @apply translate-x-5;
+}

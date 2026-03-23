@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3 -c \"import onnx; m = onnx.load\\(''/home/jetsonnano/yolo11-web-app/client/public/models/yolo11n.onnx''\\); print\\(''Inputs:'', [i.name for i in m.graph.input]\\); print\\(''Outputs:'', [o.name for o in m.graph.output]\\); print\\(''Opset:'', m.opset_import\\)\")",
+      "Bash(pip3 install:*)",
+      "Bash(python3:*)",
+      "Bash(npm run:*)",
+      "Bash(timeout 10 ffmpeg -rtsp_transport tcp -i rtsp://jetson:nano@192.168.1.122/live -frames 5 /tmp/test_frame_%03d.jpg)",
+      "Read(//usr/local/bin/**)",
+      "Read(//opt/mediamtx/**)",
+      "Bash(curl -s \"http://localhost:3001/api/health\")",
+      "Bash(timeout 5 curl -s -I \"http://localhost:3001/api/stream/mjpeg?url=rtsp://jetson:nano@192.168.1.122/live\")"
+    ]
+  }
+}

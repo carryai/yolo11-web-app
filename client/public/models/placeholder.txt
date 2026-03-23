@@ -1,0 +1,5 @@
+This is a placeholder file indicating that a proper ONNX model is required.
+
+To use the YOLO object detection features, please add a proper ONNX model file named 'yolo11n.onnx' to this directory.
+
+See GETTING_STARTED.md for instructions on how to obtain or create a compatible ONNX model.
