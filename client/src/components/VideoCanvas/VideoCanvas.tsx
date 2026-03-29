@@ -3,6 +3,38 @@ import { Detection } from '../../../../shared/types';
 import { useAppStore } from '../../store/useAppStore';
 import { mjpegPlayer } from '../../services/mjpegPlayer';
 
+// COCO keypoints skeleton connections
+const KEYPOINT_CONNECTIONS: [number, number][] = [
+  [0, 1], [0, 2], // nose to eyes
+  [1, 3], [2, 4], // eyes to ears
+  [0, 5], [0, 6], // nose to shoulders
+  [5, 7], [7, 9], // left arm
+  [6, 8], [8, 10], // right arm
+  [5, 11], [6, 12], // shoulders to hips
+  [11, 13], [13, 15], // left leg
+  [12, 14], [14, 16], // right leg
+];
+
+const KEYPOINT_COLORS = [
+  '#FF6B6B', // nose - red
+  '#4ECDC4', // left_eye - teal
+  '#4ECDC4', // right_eye - teal
+  '#FFA07A', // left_ear - light salmon
+  '#FFA07A', // right_ear - light salmon
+  '#45B7D1', // left_shoulder - cyan
+  '#45B7D1', // right_shoulder - cyan
+  '#98D8C8', // left_elbow - mint
+  '#98D8C8', // right_elbow - mint
+  '#F7DC6F', // left_wrist - yellow
+  '#F7DC6F', // right_wrist - yellow
+  '#BB8FCE', // left_hip - purple
+  '#BB8FCE', // right_hip - purple
+  '#F1948A', // left_knee - coral
+  '#F1948A', // right_knee - coral
+  '#82E0AA', // left_ankle - green
+  '#82E0AA', // right_ankle - green
+];
+
 interface VideoCanvasProps {
   detections: Detection[];
   videoRef: React.RefObject<HTMLVideoElement>;
@@ -68,15 +100,15 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({ detections, videoRef, 
       // Scale to rendered screen coordinates
       const scaleX = renderedWidth / mainCanvas.width;
       const scaleY = renderedHeight / mainCanvas.height;
-      const x = offsetX + x1 * scaleX;
-      const y = offsetY + y1 * scaleY;
+      const baseX = offsetX + x1 * scaleX;
+      const baseY = offsetY + y1 * scaleY;
       const width = (x2 - x1) * scaleX;
       const height = (y2 - y1) * scaleY;
 
       // Draw bounding box
       ctx.strokeStyle = detection.color;
       ctx.lineWidth = Math.max(2, renderedWidth / 320);
-      ctx.strokeRect(x, y, width, height);
+      ctx.strokeRect(baseX, baseY, width, height);
 
       // Draw label background
       if (settings.showLabels) {
@@ -90,11 +122,57 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({ detections, videoRef, 
 
         // Background
         ctx.fillStyle = detection.color;
-        ctx.fillRect(x, y - labelHeight, textWidth + 8, labelHeight);
+        ctx.fillRect(baseX, baseY - labelHeight, textWidth + 8, labelHeight);
 
         // Text
         ctx.fillStyle = '#ffffff';
-        ctx.fillText(label, x + 4, y - 6);
+        ctx.fillText(label, baseX + 4, baseY - 6);
+      }
+
+      // Draw keypoints and skeleton for pose models
+      if (detection.keypoints && detection.keypoints.length > 0) {
+        const keypointRadius = Math.max(3, renderedWidth / 200);
+
+        // Draw skeleton connections first (so they appear under keypoints)
+        KEYPOINT_CONNECTIONS.forEach(([i, j]) => {
+          const kp1 = detection.keypoints![i];
+          const kp2 = detection.keypoints![j];
+
+          if (kp1 && kp2 && kp1.visibility >= 2 && kp2.visibility >= 2) {
+            // Keypoints are normalized 0-1 relative to FULL IMAGE, not bbox
+            // Scale to full canvas dimensions, then add bbox offset
+            const x1 = offsetX + kp1.x * renderedWidth;
+            const y1 = offsetY + kp1.y * renderedHeight;
+            const x2 = offsetX + kp2.x * renderedWidth;
+            const y2 = offsetY + kp2.y * renderedHeight;
+
+            ctx.strokeStyle = KEYPOINT_COLORS[i] || '#ffffff';
+            ctx.lineWidth = Math.max(2, renderedWidth / 250);
+            ctx.beginPath();
+            ctx.moveTo(x1, y1);
+            ctx.lineTo(x2, y2);
+            ctx.stroke();
+          }
+        });
+
+        // Draw keypoints
+        detection.keypoints.forEach((keypoint, idx) => {
+          if (keypoint.visibility >= 1) { // Only draw visible or occluded keypoints
+            // Keypoints are normalized 0-1 relative to FULL IMAGE
+            const x = offsetX + keypoint.x * renderedWidth;
+            const y = offsetY + keypoint.y * renderedHeight;
+
+            ctx.fillStyle = KEYPOINT_COLORS[idx] || '#ffffff';
+            ctx.beginPath();
+            ctx.arc(x, y, keypointRadius, 0, Math.PI * 2);
+            ctx.fill();
+
+            // Draw darker outline for better visibility
+            ctx.strokeStyle = 'rgba(0, 0, 0, 0.5)';
+            ctx.lineWidth = 1;
+            ctx.stroke();
+          }
+        });
       }
     });
   }, [detections, settings.showLabels, settings.showConfidence]);

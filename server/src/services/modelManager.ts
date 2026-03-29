@@ -22,6 +22,27 @@ const COCO_CLASSES = [
   'toothbrush'
 ];
 
+// COCO keypoints (17 keypoints) - for pose estimation models
+const COCO_KEYPOINTS = [
+  'nose',
+  'left_eye',
+  'right_eye',
+  'left_ear',
+  'right_ear',
+  'left_shoulder',
+  'right_shoulder',
+  'left_elbow',
+  'right_elbow',
+  'left_wrist',
+  'right_wrist',
+  'left_hip',
+  'right_hip',
+  'left_knee',
+  'right_knee',
+  'left_ankle',
+  'right_ankle'
+];
+
 export class ModelManager {
   private models: Map<string, ModelInfo> = new Map();
   private sessions: Map<string, ort.InferenceSession> = new Map();
@@ -59,6 +80,9 @@ export class ModelManager {
           // Extract model metadata from ONNX file
           const metadata = await this.extractModelMetadata(filePath);
 
+          // Detect if this is a pose model (output shape [1, 56, 8400] where 56 = 4 + 17*3)
+          const isPoseModel = metadata.outputShape[1] === 56;
+
           const modelInfo: ModelInfo = {
             id,
             name: metadata.name || id,
@@ -68,10 +92,11 @@ export class ModelManager {
             classes: metadata.classes,
             isDefault: id === 'yolo11n',
             usageCount: 0,
+            keypoints: isPoseModel ? COCO_KEYPOINTS : undefined,
           };
 
           this.models.set(id, modelInfo);
-          this.logger.info({ modelId: id, classes: metadata.classes.length }, 'Loaded model from disk');
+          this.logger.info({ modelId: id, classes: metadata.classes.length, isPoseModel }, 'Loaded model from disk');
         }
       }
 
@@ -109,6 +134,9 @@ export class ModelManager {
     // Use provided classes or metadata classes or fallback to COCO
     const modelClasses = classes || metadata.classes || COCO_CLASSES.slice(0, metadata.numClasses || 80);
 
+    // Detect if this is a pose model (output shape [1, 56, 8400] where 56 = 4 + 17*3)
+    const isPoseModel = metadata.outputShape[1] === 56;
+
     // Create model info
     const modelInfo: ModelInfo = {
       id,
@@ -120,6 +148,7 @@ export class ModelManager {
       isDefault: false,
       uploadDate: Date.now(),
       usageCount: 0,
+      keypoints: isPoseModel ? COCO_KEYPOINTS : undefined,
     };
 
     this.models.set(id, modelInfo);
@@ -131,7 +160,7 @@ export class ModelManager {
         graphOptimizationLevel: 'all',
       });
       this.sessions.set(id, session);
-      this.logger.info({ modelId: id, classes: modelClasses.length }, 'Model session created');
+      this.logger.info({ modelId: id, classes: modelClasses.length, isPoseModel }, 'Model session created');
     } catch (error: any) {
       this.logger.error({ modelId: id, error }, 'Failed to create model session');
     }

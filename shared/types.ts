@@ -5,6 +5,15 @@ export interface Detection {
   className: string;
   confidence: number;
   color: string;
+  keypoints?: Keypoint[]; // For pose models
+}
+
+// Keypoint for pose estimation
+export interface Keypoint {
+  x: number; // normalized 0-1
+  y: number; // normalized 0-1
+  visibility: number; // 0: not labeled, 1: occluded, 2: visible
+  name: string;
 }
 
 // Model types
@@ -19,6 +28,7 @@ export interface ModelInfo {
   uploadDate?: number;
   usageCount: number;
   architecture?: string; // Optional: model architecture type (e.g., 'yolo-custom-5cls')
+  keypoints?: string[]; // For pose models: names of keypoints (e.g., COCO 17 keypoints)
 }
 
 export interface ModelMetadata {

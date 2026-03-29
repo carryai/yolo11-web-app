@@ -1,15 +1,17 @@
 import * as ort from 'onnxruntime-web';
-import { Detection } from '../../../shared/types';
+import { Detection, Keypoint } from '../../../shared/types';
 import { getClassColor } from './modelStorage';
 
 export class ONNXInference {
   private session: ort.InferenceSession | null = null;
   private inputShape: number[] = [1, 3, 640, 640];
   private classes: string[] = [];
+  private keypoints: string[] = [];
+  private isPoseModel: boolean = false;
   private activeExecutionProvider: string = 'unknown';
   private letterboxInfo: { scale: number; padX: number; padY: number } | null = null;
 
-  async loadModel(modelBlob: Blob | string, inputShape: number[], classes: string[]): Promise<void> {
+  async loadModel(modelBlob: Blob | string, inputShape: number[], classes: string[], keypoints?: string[], outputShape?: number[]): Promise<void> {
     try {
       // Free previous session
       if (this.session) {
@@ -39,6 +41,10 @@ export class ONNXInference {
 
       this.inputShape = inputShape;
       this.classes = classes;
+      this.keypoints = keypoints || [];
+      // Detect pose model by output shape: [1, 56, 8400] where 56 = 4 bbox + 17*3 keypoints
+      const hasPoseOutputShape = outputShape?.[1] === 56;
+      this.isPoseModel = hasPoseOutputShape || (keypoints !== undefined && keypoints.length > 0);
 
       // Detect active execution provider
       this.activeExecutionProvider = this.detectExecutionProvider();
@@ -46,7 +52,7 @@ export class ONNXInference {
       const urlParams = new URLSearchParams(window.location.search);
       const debugMode = urlParams.get('debug') === 'true';
       if (debugMode) {
-        console.log('Model loaded successfully, using engine:', this.activeExecutionProvider);
+        console.log('Model loaded successfully, using engine:', this.activeExecutionProvider, this.isPoseModel ? '(pose model)' : '');
       }
     } catch (error) {
       console.error('Failed to load model:', error);
@@ -189,6 +195,7 @@ export class ONNXInference {
 
   private postprocessOutput(output: ort.Tensor, srcWidth: number, srcHeight: number, confidenceThreshold: number = 0.25, iouThreshold: number = 0.45): Detection[] {
     // YOLO output shape: [1, 84, 8400] - transposed format used by YOLOv8/YOLO11
+    // YOLO-pose output shape: [1, 56, 8400] - 4 bbox + 17 keypoints * 3 (x, y, visibility)
     const dims = output.dims;
     const data = output.data as Float32Array;
 
@@ -197,13 +204,13 @@ export class ONNXInference {
     let isTransposed = false;
 
     // Detect output layout: [1, 84, 8400] means transposed, [1, 8400, 84] means normal
-    if (dims.length === 3 && dims[1] === 84) {
-      // Format: [batch, 84, 8400] - transposed format used by YOLOv8/YOLO11
+    if (dims.length === 3 && dims[1] >= 56) {
+      // Format: [batch, features, anchors] - transposed format used by YOLOv8/YOLO11/YOLO11-pose
       isTransposed = true;
-      numFeatures = dims[1]; // 84 (4 bbox + 80 classes)
-      numAnchors = dims[2];  // 8400
-    } else if (dims.length === 3 && dims[2] === 84) {
-      // Format: [batch, 8400, 84] - standard format
+      numFeatures = dims[1];
+      numAnchors = dims[2];
+    } else if (dims.length === 3 && dims[2] >= 56) {
+      // Format: [batch, anchors, features] - standard format
       numFeatures = dims[2];
       numAnchors = dims[1];
     } else {
@@ -212,12 +219,16 @@ export class ONNXInference {
       numAnchors = dims[2];
     }
 
-    const numClasses = numFeatures - 4;
+    // For pose models: numFeatures = 56 (4 bbox + 17 keypoints * 3)
+    // For detection models: numFeatures = 84 (4 bbox + 80 classes)
+    const numKeypoints = this.isPoseModel ? 17 : 0;
+    const numClasses = this.isPoseModel ? 1 : numFeatures - 4; // Pose models only detect 'person'
 
     const predictions: Array<{
       bbox: [number, number, number, number];
       classId: number;
       confidence: number;
+      keypoints?: Keypoint[];
     }> = [];
 
     let maxConfidenceFound = 0;
@@ -226,19 +237,51 @@ export class ONNXInference {
       let maxConfidence = 0;
       let maxClassId = 0;
 
-      // Find class with highest confidence
-      for (let c = 0; c < numClasses; c++) {
-        let confidence: number;
+      // For pose models, YOLO-pose output format is [1, 56, 8400] where:
+      // - Channels 0-3: bbox (cx, cy, w, h)
+      // - Channels 4-55: 17 keypoints × 3 (x, y, visibility)
+      // There is NO separate objectness channel in pose models
+      if (this.isPoseModel) {
+        // For pose models, use max keypoint visibility as confidence proxy
+        // or calculate average visibility across all visible keypoints
+        let totalVisibility = 0;
+        let visibleKeypoints = 0;
 
-        if (isTransposed) {
-          confidence = data[4 * numAnchors + c * numAnchors + i];
-        } else {
-          confidence = data[i * numFeatures + 4 + c];
+        for (let k = 0; k < numKeypoints; k++) {
+          const kpBase = 4 + k * 3; // 4 bbox + 3 per keypoint (NO objectness)
+          let kvis: number;
+
+          if (isTransposed) {
+            kvis = data[(kpBase + 2) * numAnchors + i]; // visibility is 3rd value of each keypoint
+          } else {
+            kvis = data[i * numFeatures + kpBase + 2];
+          }
+
+          const visSig = 1 / (1 + Math.exp(-kvis));
+          if (visSig >= 0.5) {
+            totalVisibility += visSig;
+            visibleKeypoints++;
+          }
         }
 
-        if (confidence > maxConfidence) {
-          maxConfidence = confidence;
-          maxClassId = c;
+        // Use average visibility as confidence (or 0 if no visible keypoints)
+        maxConfidence = visibleKeypoints > 0 ? totalVisibility / numKeypoints : 0;
+        maxClassId = 0; // Only 'person' class
+      } else {
+        // Find class with highest confidence (standard detection)
+        for (let c = 0; c < numClasses; c++) {
+          let confidence: number;
+
+          if (isTransposed) {
+            confidence = data[4 * numAnchors + c * numAnchors + i];
+          } else {
+            confidence = data[i * numFeatures + 4 + c];
+          }
+
+          if (confidence > maxConfidence) {
+            maxConfidence = confidence;
+            maxClassId = c;
+          }
         }
       }
 
@@ -262,20 +305,52 @@ export class ONNXInference {
           h = data[i * numFeatures + 3];
         }
 
-        // Convert to x1, y1, x2, y2 format (normalized to 640x640 model input)
-        const x1 = (cx - w / 2) / 640;
-        const y1 = (cy - h / 2) / 640;
-        const x2 = (cx + w / 2) / 640;
-        const y2 = (cy + h / 2) / 640;
-
+        // For YOLO11, bbox values are already in image space (not normalized to 640)
+        // They represent center-x, center-y, width, height
         // Apply inverse letterbox transform to get coordinates in original image space
         const { scale, padX, padY } = this.letterboxInfo || { scale: 1, padX: 0, padY: 0 };
 
-        // Remove padding and rescale to original image dimensions
-        const x1Orig = ((x1 * 640) - padX) / scale / srcWidth;
-        const y1Orig = ((y1 * 640) - padY) / scale / srcHeight;
-        const x2Orig = ((x2 * 640) - padX) / scale / srcWidth;
-        const y2Orig = ((y2 * 640) - padY) / scale / srcHeight;
+        // Convert center format to corner format and remove padding/rescale
+        const x1Orig = ((cx - w / 2) - padX) / scale / srcWidth;
+        const y1Orig = ((cy - h / 2) - padY) / scale / srcHeight;
+        const x2Orig = ((cx + w / 2) - padX) / scale / srcWidth;
+        const y2Orig = ((cy + h / 2) - padY) / scale / srcHeight;
+
+        // Extract keypoints for pose models
+        let keypoints: Keypoint[] | undefined;
+        if (this.isPoseModel && numKeypoints > 0) {
+          keypoints = [];
+          for (let k = 0; k < numKeypoints; k++) {
+            let kx: number, ky: number, kvis: number;
+            // For pose: 4 bbox + keypoints*3 (NO objectness channel)
+            // Keypoints start at index 4, not 5
+            const kpBase = 4 + k * 3; // 4 bbox + 3 per keypoint
+
+            if (isTransposed) {
+              kx = data[kpBase * numAnchors + i];
+              ky = data[(kpBase + 1) * numAnchors + i];
+              kvis = data[(kpBase + 2) * numAnchors + i];
+            } else {
+              kx = data[i * numFeatures + kpBase];
+              ky = data[i * numFeatures + kpBase + 1];
+              kvis = data[i * numFeatures + kpBase + 2];
+            }
+
+            // Apply sigmoid to visibility score
+            const kvisSig = 1 / (1 + Math.exp(-kvis));
+
+            // Transform keypoints coordinates (same transform as bbox)
+            const kxOrig = (kx - padX) / scale / srcWidth;
+            const kyOrig = (ky - padY) / scale / srcHeight;
+
+            keypoints.push({
+              x: Math.max(0, Math.min(1, kxOrig)),
+              y: Math.max(0, Math.min(1, kyOrig)),
+              visibility: kvisSig >= 0.5 ? 2 : 0, // threshold visibility
+              name: this.keypoints[k] || `keypoint_${k}`,
+            });
+          }
+        }
 
         predictions.push({
           bbox: [
@@ -286,6 +361,7 @@ export class ONNXInference {
           ],
           classId: maxClassId,
           confidence: maxConfidence,
+          keypoints,
         });
       }
     }
@@ -300,13 +376,14 @@ export class ONNXInference {
       className: this.classes[d.classId] || `class_${d.classId}`,
       confidence: d.confidence,
       color: getClassColor(d.classId),
+      keypoints: d.keypoints,
     }));
   }
 
   private nonMaxSuppression(
-    predictions: Array<{ bbox: [number, number, number, number]; classId: number; confidence: number }>,
+    predictions: Array<{ bbox: [number, number, number, number]; classId: number; confidence: number; keypoints?: Keypoint[] }>,
     iouThreshold: number
-  ): Array<{ bbox: [number, number, number, number]; classId: number; confidence: number }> {
+  ): Array<{ bbox: [number, number, number, number]; classId: number; confidence: number; keypoints?: Keypoint[] }> {
     // Sort by confidence
     predictions.sort((a, b) => b.confidence - a.confidence);
 

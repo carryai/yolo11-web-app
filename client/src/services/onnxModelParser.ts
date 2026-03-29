@@ -13,6 +13,7 @@ export interface ONNXModelMetadata {
   outputShape: number[];
   numClasses: number;
   numAnchors: number;
+  numKeypoints?: number; // For pose models
   architecture: string;
 }
 
@@ -121,7 +122,7 @@ async function getModelOutputShape(session: ort.InferenceSession): Promise<numbe
 /**
  * Analyze output shape to determine number of classes and YOLO architecture
  */
-function analyzeOutputShape(outputShape: number[]): { numClasses: number; numAnchors: number; architecture: string } {
+function analyzeOutputShape(outputShape: number[]): { numClasses: number; numAnchors: number; architecture: string; numKeypoints?: number } {
   if (outputShape.length !== 3) {
     // Unknown format, return defaults
     return { numClasses: 80, numAnchors: 8400, architecture: 'unknown' };
@@ -153,15 +154,28 @@ function analyzeOutputShape(outputShape: number[]): { numClasses: number; numAnc
     }
   }
 
-  // numFeatures = 4 (bbox) + numClasses
-  const numClasses = numFeatures - 4;
+  // Check for pose model: [1, 56, 8400] where 56 = 4 bbox + 17 keypoints * 3
+  const isPoseModel = numFeatures === 56;
+  let numClasses: number;
+  let numKeypoints: number | undefined;
+
+  if (isPoseModel) {
+    // Pose model: 4 bbox + 17 keypoints * 3 (x, y, visibility)
+    numKeypoints = 17;
+    numClasses = 1; // Pose models typically only detect 'person'
+  } else {
+    // Standard detection: numFeatures = 4 (bbox) + numClasses
+    numClasses = numFeatures - 4;
+  }
 
   // Detect architecture based on numAnchors and numClasses
   let architecture = 'unknown';
 
   if (numAnchors === 8400) {
     // 8400 anchors is used by YOLOv8, YOLOv9, YOLOv10, YOLO11, YOLO12, YOLO26
-    if (numClasses === 80) {
+    if (isPoseModel) {
+      architecture = 'yolo-pose';
+    } else if (numClasses === 80) {
       architecture = 'yolo-coco'; // Could be any COCO-trained model
     } else {
       architecture = 'yolo-custom'; // Custom classes
@@ -178,11 +192,11 @@ function analyzeOutputShape(outputShape: number[]): { numClasses: number; numAnc
   }
 
   // Add version hint based on context
-  if (numClasses !== 80 && numAnchors === 8400) {
+  if (numClasses !== 80 && numAnchors === 8400 && !isPoseModel) {
     architecture = `yolo-custom-${numClasses}cls`;
   }
 
-  return { numClasses, numAnchors, architecture };
+  return { numClasses, numAnchors, architecture, numKeypoints };
 }
 
 /**

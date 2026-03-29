@@ -110,12 +110,48 @@ export async function getStorageUsage(): Promise<{ used: number; quota: number }
   return { used: 0, quota: 0 };
 }
 
-// Default bundled models
+// Known model configurations for automatic detection
+const KNOWN_MODELS: { [key: string]: { name: string; size: number; outputShape: number[]; classes: string[]; keypoints?: string[] } } = {
+  'yolo11n': {
+    name: 'YOLO11n (Nano)',
+    size: 6400000,
+    outputShape: [1, 84, 8400],
+    classes: getCOCOClasses(),
+  },
+  'yolo11n-pose': {
+    name: 'YOLO11n Pose (Nano)',
+    size: 6800000,
+    outputShape: [1, 56, 8400],
+    classes: ['person'],
+    keypoints: getCOCOKeypoints(),
+  },
+  'yolo12n': {
+    name: 'YOLO12n (Nano)',
+    size: 6500000,
+    outputShape: [1, 84, 8400],
+    classes: getCOCOClasses(),
+  },
+  'yolo26n': {
+    name: 'YOLO26n (Nano)',
+    size: 6600000,
+    outputShape: [1, 84, 8400],
+    classes: getCOCOClasses(),
+  },
+  'yolo26n-pose': {
+    name: 'YOLO26n Pose (Nano)',
+    size: 7000000,
+    outputShape: [1, 56, 8400],
+    classes: ['person'],
+    keypoints: getCOCOKeypoints(),
+  },
+};
+
+// Default bundled models - will be merged with discovered models
 export const DEFAULT_MODELS: ModelInfo[] = [
   {
     id: 'yolo11n',
     name: 'YOLO11n (Nano)',
-    size: 6400000, // ~6.4MB
+    size: 6400000,
     inputShape: [1, 3, 640, 640],
     outputShape: [1, 84, 8400],
     classes: getCOCOClasses(),
@@ -123,16 +159,51 @@ export const DEFAULT_MODELS: ModelInfo[] = [
     usageCount: 0,
   },
   {
-    id: 'yolo11s',
-    name: 'YOLO11s (Small)',
-    size: 18000000, // ~18MB
+    id: 'yolo11n-pose',
+    name: 'YOLO11n Pose (Nano)',
+    size: 6800000,
     inputShape: [1, 3, 640, 640],
-    outputShape: [1, 84, 8400],
-    classes: getCOCOClasses(),
+    outputShape: [1, 56, 8400],
+    classes: ['person'],
+    keypoints: getCOCOKeypoints(),
     isDefault: false,
     usageCount: 0,
   },
 ];
+
+/**
+ * Discover available models in the public/models folder
+ * Returns a list of ModelInfo for all .onnx files found
+ */
+export async function discoverAvailableModels(): Promise<ModelInfo[]> {
+  const discovered: ModelInfo[] = [];
+  const modelNames = Object.keys(KNOWN_MODELS);
+
+  // Check each known model
+  for (const modelName of modelNames) {
+    try {
+      const config = KNOWN_MODELS[modelName];
+      const response = await fetch(`/models/${modelName}.onnx`, { method: 'HEAD' });
+      if (response.ok) {
+        discovered.push({
+          id: modelName,
+          name: config.name,
+          size: config.size,
+          inputShape: [1, 3, 640, 640],
+          outputShape: config.outputShape,
+          classes: config.classes,
+          keypoints: config.keypoints,
+          isDefault: modelName === 'yolo11n',
+          usageCount: 0,
+        });
+      }
+    } catch {
+      // Model not available, skip
+    }
+  }
+
+  return discovered;
+}
 
 function getCOCOClasses(): string[] {
   return [
@@ -148,6 +219,28 @@ function getCOCOClasses(): string[] {
     'remote', 'keyboard', 'cell phone', 'microwave', 'oven', 'toaster', 'sink',
     'refrigerator', 'book', 'clock', 'vase', 'scissors', 'teddy bear', 'hair drier',
     'toothbrush'
+  ];
+}
+
+export function getCOCOKeypoints(): string[] {
+  return [
+    'nose',
+    'left_eye',
+    'right_eye',
+    'left_ear',
+    'right_ear',
+    'left_shoulder',
+    'right_shoulder',
+    'left_elbow',
+    'right_elbow',
+    'left_wrist',
+    'right_wrist',
+    'left_hip',
+    'right_hip',
+    'left_knee',
+    'right_knee',
+    'left_ankle',
+    'right_ankle'
   ];
 }
 

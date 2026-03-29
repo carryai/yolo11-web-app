@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useAppStore } from '../../store/useAppStore';
 import { ModelInfo } from '../../../../shared/types';
-import { getAllModels, saveModel, deleteModel, DEFAULT_MODELS, getStorageUsage } from '../../services/modelStorage';
+import { getAllModels, saveModel, deleteModel, getStorageUsage, discoverAvailableModels, getCOCOKeypoints } from '../../services/modelStorage';
 import { parseONNXModel, generateDefaultClassNames, isValidYOLOModel } from '../../services/onnxModelParser';
 
 interface ModelLibraryProps {
@@ -34,9 +34,17 @@ export const ModelLibrary: React.FC<ModelLibraryProps> = ({ onClose, onLoadModel
     try {
       const savedModels = await getAllModels();
       console.log('Loaded from IndexedDB:', savedModels.map(m => ({ id: m.id, classes: m.classes })));
-      // Combine with default models
-      const allModels = [...DEFAULT_MODELS, ...savedModels.filter(m => !DEFAULT_MODELS.find(dm => dm.id === m.id))];
-      console.log('All models:', allModels.map(m => ({ id: m.id, classes: m.classes })));
+
+      // Discover available models in public/models folder
+      const availableModels = await discoverAvailableModels();
+      console.log('Discovered available models:', availableModels.map(m => ({ id: m.id, name: m.name })));
+
+      // Combine discovered models with saved models (saved models take precedence)
+      const allModels = [
+        ...availableModels,
+        ...savedModels.filter(m => !availableModels.find(am => am.id === m.id))
+      ];
+      console.log('All models:', allModels.map(m => ({ id: m.id, classes: m.classes, keypoints: m.keypoints?.length })));
       setModels(allModels);
     } catch (error) {
       console.error('Failed to load models:', error);
@@ -96,28 +104,31 @@ export const ModelLibrary: React.FC<ModelLibraryProps> = ({ onClose, onLoadModel
             uploadDate: Date.now(),
             usageCount: 0,
             architecture: metadata.architecture,
+            keypoints: metadata.numKeypoints ? getCOCOKeypoints() : undefined,
           },
         });
         setShowClassEditor(true);
       } else {
-        // For COCO models (80 classes), save directly
+        // For COCO models (80 classes) or pose models, save directly
+        const isPoseModel = metadata.outputShape[1] === 56; // 4 bbox + 17 keypoints * 3
         const modelMetadata: ModelInfo = {
           id,
           name,
           size: file.size,
           inputShape: metadata.inputShape,
           outputShape: metadata.outputShape,
-          classes: getCOCOClasses(),
+          classes: isPoseModel ? ['person'] : getCOCOClasses(),
           isDefault: false,
           uploadDate: Date.now(),
           usageCount: 0,
           architecture: metadata.architecture,
+          keypoints: isPoseModel ? getCOCOKeypoints() : undefined,
         };
 
         await saveModel(id, name, blobObj, modelMetadata);
         await loadModels();
         await loadStorageInfo();
-        alert(`Model "${name}" uploaded successfully! (${metadata.numClasses} classes)`);
+        alert(`Model "${name}" uploaded successfully! (${metadata.numClasses} classes${isPoseModel ? `, ${metadata.numKeypoints} keypoints` : ''})`);
       }
     } catch (error) {
       console.error('Failed to upload model:', error);
@@ -190,8 +201,9 @@ export const ModelLibrary: React.FC<ModelLibraryProps> = ({ onClose, onLoadModel
   };
 
   const handleDelete = async (modelId: string) => {
-    if (DEFAULT_MODELS.find(m => m.id === modelId)) {
-      alert('Cannot delete default models');
+    // Cannot delete built-in models (those in the models list with isDefault flag or matching known models)
+    if (models.find(m => m.id === modelId && m.isDefault)) {
+      alert('Cannot delete built-in models');
       return;
     }
 
@@ -201,7 +213,7 @@ export const ModelLibrary: React.FC<ModelLibraryProps> = ({ onClose, onLoadModel
       await deleteModel(modelId);
       await loadModels();
       await loadStorageInfo();
-      
+
       if (currentModel?.id === modelId) {
         setCurrentModel(null);
       }
@@ -290,9 +302,12 @@ export const ModelLibrary: React.FC<ModelLibraryProps> = ({ onClose, onLoadModel
                     {currentModel?.id === model.id && (
                       <span className="text-xs bg-accent-blue/20 text-accent-blue px-2 py-0.5 rounded">Active</span>
                     )}
+                    {model.keypoints && model.keypoints.length > 0 && (
+                      <span className="text-xs bg-accent-purple/20 text-accent-purple px-2 py-0.5 rounded">Pose</span>
+                    )}
                   </div>
                   <div className="text-sm text-text-secondary mt-1">
-                    {model.classes.length} classes • {(model.size / 1024 / 1024).toFixed(1)}MB
+                    {model.classes.length} classes{model.keypoints ? ` + ${model.keypoints.length} keypoints` : ''} • {(model.size / 1024 / 1024).toFixed(1)}MB
                     {model.uploadDate && ` • Uploaded ${new Date(model.uploadDate).toLocaleDateString()}`}
                   </div>
                 </div>

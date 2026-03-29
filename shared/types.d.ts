@@ -4,6 +4,13 @@ export interface Detection {
     className: string;
     confidence: number;
     color: string;
+    keypoints?: Keypoint[];
+}
+export interface Keypoint {
+    x: number;
+    y: number;
+    visibility: number;
+    name: string;
 }
 export interface ModelInfo {
     id: string;
@@ -16,6 +23,7 @@ export interface ModelInfo {
     uploadDate?: number;
     usageCount: number;
     architecture?: string;
+    keypoints?: string[];
 }
 export interface ModelMetadata {
     id: string;

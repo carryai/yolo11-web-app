@@ -62,7 +62,9 @@ function App() {
         await onnxInference.loadModel(
           modelData.blob,
           modelData.metadata.inputShape,
-          modelData.metadata.classes
+          modelData.metadata.classes,
+          modelData.metadata.keypoints,
+          modelData.metadata.outputShape
         );
         setCurrentModel(modelData.metadata);
       } else {
@@ -84,7 +86,9 @@ function App() {
           await onnxInference.loadModel(
             new Blob([content]),
             defaultModel.inputShape,
-            defaultModel.classes
+            defaultModel.classes,
+            defaultModel.keypoints,
+            defaultModel.outputShape
           );
           setCurrentModel(defaultModel);
         } else {
@@ -237,7 +241,9 @@ function App() {
         await onnxInference.loadModel(
           modelData.blob,
           modelData.metadata.inputShape,
-          modelData.metadata.classes
+          modelData.metadata.classes,
+          modelData.metadata.keypoints,
+          modelData.metadata.outputShape
         );
         setCurrentModel(modelData.metadata);
       } else {

@@ -2,6 +2,7 @@
   "permissions": {
     "allow": [
       "Bash(python3 -c \"import onnx; m = onnx.load\\(''/home/jetsonnano/yolo11-web-app/client/public/models/yolo11n.onnx''\\); print\\(''Inputs:'', [i.name for i in m.graph.input]\\); print\\(''Outputs:'', [o.name for o in m.graph.output]\\); print\\(''Opset:'', m.opset_import\\)\")",
+      "Bash(python3 -c \"import onnx; m = onnx.load\\(''/home/jetsonnano/yolo11-web-app/client/public/models/yolo11n-pose.onnx''\\); print\\(''Inputs:'', [i.name for i in m.graph.input]\\); print\\(''Outputs:'', [o.name for o in m.graph.output]\\); print\\(''Opset:'', m.opset_import\\)\")",
       "Bash(pip3 install:*)",
       "Bash(python3:*)",
       "Bash(npm run:*)",
@@ -12,7 +13,16 @@
       "Bash(timeout 5 curl -s -I \"http://localhost:3001/api/stream/mjpeg?url=rtsp://jetson:nano@192.168.1.122/live\")",
       "Bash(npx tsc:*)",
       "Bash(./node_modules/.bin/tsc --noEmit --skipLibCheck)",
-      "Bash(./node_modules/.bin/tsc --noEmit --skipLibCheck -p client/tsconfig.json)"
+      "Bash(./node_modules/.bin/tsc --noEmit --skipLibCheck -p client/tsconfig.json)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(curl -s \"https://raw.githubusercontent.com/carryai/drowsiness/main/src/lib/onnx.ts\")",
+      "Bash(curl -s \"https://api.github.com/repos/carryai/drowsiness/contents/src\")",
+      "Bash(curl -s \"https://api.github.com/repos/carryai/drowsiness/git/trees/main?recursive=1\")",
+      "Bash(curl -s \"https://api.github.com/repos/carryai/drowsiness/contents\")",
+      "Bash(curl -s \"https://raw.githubusercontent.com/carryai/drowsiness/refs/heads/main/app.js\")",
+      "Bash(curl -sL https://drowsiness.carryai.co/app.js)",
+      "WebSearch",
+      "WebFetch(domain:docs.ultralytics.com)"
     ]
   }
 }
