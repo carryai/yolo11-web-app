@@ -195,7 +195,8 @@ export class ONNXInference {
 
   private postprocessOutput(output: ort.Tensor, srcWidth: number, srcHeight: number, confidenceThreshold: number = 0.25, iouThreshold: number = 0.45): Detection[] {
     // YOLO output shape: [1, 84, 8400] - transposed format used by YOLOv8/YOLO11
-    // YOLO-pose output shape: [1, 56, 8400] - 4 bbox + 17 keypoints * 3 (x, y, visibility)
+    // YOLO-pose output shape: [1, 56, 8400] - 4 bbox + 1 obj + 17 keypoints * 3 (x, y, visibility)
+    // IMPORTANT: YOLO11-pose has objectness at channel 4 (already sigmoided), keypoints start at channel 5
     const dims = output.dims;
     const data = output.data as Float32Array;
 
@@ -219,7 +220,28 @@ export class ONNXInference {
       numAnchors = dims[2];
     }
 
-    // For pose models: numFeatures = 56 (4 bbox + 17 keypoints * 3)
+    // DEBUG: Log raw output tensor shape and sample values
+    const urlParams = new URLSearchParams(window.location.search);
+    const debugMode = urlParams.get('debug') === 'true';
+    if (debugMode) {
+      console.log('[DEBUG] Raw output tensor shape:', dims);
+      console.log('[DEBUG] isPoseModel:', this.isPoseModel);
+      console.log('[DEBUG] numFeatures:', numFeatures, 'numAnchors:', numAnchors);
+
+      // Sample raw values from first 3 anchors (all 56 channels for pose)
+      const sampleSize = Math.min(3, numAnchors);
+      for (let s = 0; s < sampleSize; s++) {
+        const sampleData = [];
+        for (let f = 0; f < Math.min(12, numFeatures); f++) {
+          const idx = isTransposed ? f * numAnchors + s : s * numFeatures + f;
+          sampleData.push(data[idx].toFixed(4));
+        }
+        console.log(`[DEBUG] Anchor ${s} channels [0-11]:`, sampleData.join(', '));
+      }
+    }
+
+    // For pose models: numFeatures = 56 (4 bbox + 1 obj + 17 keypoints * 3 = 4 + 1 + 51 = 56)
+    // IMPORTANT: Channel 4 is objectness, keypoints start at channel 5
     // For detection models: numFeatures = 84 (4 bbox + 80 classes)
     const numKeypoints = this.isPoseModel ? 17 : 0;
     const numClasses = this.isPoseModel ? 1 : numFeatures - 4; // Pose models only detect 'person'
@@ -238,34 +260,19 @@ export class ONNXInference {
       let maxClassId = 0;
 
       // For pose models, YOLO-pose output format is [1, 56, 8400] where:
-      // - Channels 0-3: bbox (cx, cy, w, h)
-      // - Channels 4-55: 17 keypoints × 3 (x, y, visibility)
-      // There is NO separate objectness channel in pose models
+      // - Channels 0-3: bbox (cx, cy, w, h) in pixel space (0-640)
+      // - Channel 4: objectness score (ALREADY sigmoided, 0-1 range)
+      // - Channels 5-55: 17 keypoints × 3 (x, y, visibility) = 51 channels
+      // Total: 4 + 1 + 51 = 56 channels
+      // IMPORTANT: Objectness and keypoint visibility are ALREADY sigmoided - do NOT apply sigmoid again!
       if (this.isPoseModel) {
-        // For pose models, use max keypoint visibility as confidence proxy
-        // or calculate average visibility across all visible keypoints
-        let totalVisibility = 0;
-        let visibleKeypoints = 0;
-
-        for (let k = 0; k < numKeypoints; k++) {
-          const kpBase = 4 + k * 3; // 4 bbox + 3 per keypoint (NO objectness)
-          let kvis: number;
-
-          if (isTransposed) {
-            kvis = data[(kpBase + 2) * numAnchors + i]; // visibility is 3rd value of each keypoint
-          } else {
-            kvis = data[i * numFeatures + kpBase + 2];
-          }
-
-          const visSig = 1 / (1 + Math.exp(-kvis));
-          if (visSig >= 0.5) {
-            totalVisibility += visSig;
-            visibleKeypoints++;
-          }
+        // For pose models, use objectness score (channel 4) as confidence
+        // Objectness is already in 0-1 range (already sigmoided by the model)
+        if (isTransposed) {
+          maxConfidence = data[4 * numAnchors + i]; // Channel 4 = objectness (already sigmoided)
+        } else {
+          maxConfidence = data[i * numFeatures + 4]; // Channel 4 = objectness (already sigmoided)
         }
-
-        // Use average visibility as confidence (or 0 if no visible keypoints)
-        maxConfidence = visibleKeypoints > 0 ? totalVisibility / numKeypoints : 0;
         maxClassId = 0; // Only 'person' class
       } else {
         // Find class with highest confidence (standard detection)
@@ -305,10 +312,20 @@ export class ONNXInference {
           h = data[i * numFeatures + 3];
         }
 
+        // DEBUG: Log raw bbox values for first few detections
+        if (debugMode && maxConfidence >= confidenceThreshold && i < 3) {
+          console.log(`[DEBUG] Anchor ${i} raw bbox: cx=${cx.toFixed(2)}, cy=${cy.toFixed(2)}, w=${w.toFixed(2)}, h=${h.toFixed(2)}`);
+        }
+
         // For YOLO11, bbox values are already in image space (not normalized to 640)
         // They represent center-x, center-y, width, height
         // Apply inverse letterbox transform to get coordinates in original image space
         const { scale, padX, padY } = this.letterboxInfo || { scale: 1, padX: 0, padY: 0 };
+
+        // DEBUG: Log letterbox parameters
+        if (debugMode && maxConfidence >= confidenceThreshold && i < 3) {
+          console.log(`[DEBUG] Letterbox: scale=${scale.toFixed(4)}, padX=${padX}, padY=${padY}, srcSize=${srcWidth}x${srcHeight}`);
+        }
 
         // Convert center format to corner format and remove padding/rescale
         const x1Orig = ((cx - w / 2) - padX) / scale / srcWidth;
@@ -316,37 +333,44 @@ export class ONNXInference {
         const x2Orig = ((cx + w / 2) - padX) / scale / srcWidth;
         const y2Orig = ((cy + h / 2) - padY) / scale / srcHeight;
 
+        // DEBUG: Log transformed bbox coordinates
+        if (debugMode && maxConfidence >= confidenceThreshold && i < 3) {
+          console.log(`[DEBUG] Anchor ${i} transformed bbox: x1=${x1Orig.toFixed(4)}, y1=${y1Orig.toFixed(4)}, x2=${x2Orig.toFixed(4)}, y2=${y2Orig.toFixed(4)}`);
+        }
+
         // Extract keypoints for pose models
         let keypoints: Keypoint[] | undefined;
         if (this.isPoseModel && numKeypoints > 0) {
           keypoints = [];
           for (let k = 0; k < numKeypoints; k++) {
             let kx: number, ky: number, kvis: number;
-            // For pose: 4 bbox + keypoints*3 (NO objectness channel)
-            // Keypoints start at index 4, not 5
-            const kpBase = 4 + k * 3; // 4 bbox + 3 per keypoint
+            // For pose: 4 bbox + 1 obj + keypoints*3 (keypoints start at channel 5)
+            const kpBase = 5 + k * 3; // 4 bbox + 1 obj + 3 per keypoint
 
             if (isTransposed) {
               kx = data[kpBase * numAnchors + i];
               ky = data[(kpBase + 1) * numAnchors + i];
-              kvis = data[(kpBase + 2) * numAnchors + i];
+              kvis = data[(kpBase + 2) * numAnchors + i]; // Already sigmoided (0-1 range)
             } else {
               kx = data[i * numFeatures + kpBase];
               ky = data[i * numFeatures + kpBase + 1];
-              kvis = data[i * numFeatures + kpBase + 2];
+              kvis = data[i * numFeatures + kpBase + 2]; // Already sigmoided (0-1 range)
             }
 
-            // Apply sigmoid to visibility score
-            const kvisSig = 1 / (1 + Math.exp(-kvis));
-
+            // Do NOT apply sigmoid - kvis is already in 0-1 range from the model
             // Transform keypoints coordinates (same transform as bbox)
             const kxOrig = (kx - padX) / scale / srcWidth;
             const kyOrig = (ky - padY) / scale / srcHeight;
 
+            // DEBUG: Log first keypoint for first few detections
+            if (debugMode && k === 0 && maxConfidence >= confidenceThreshold) {
+              console.log(`[DEBUG] Anchor ${i} keypoint[0]: x=${kx.toFixed(2)}, y=${ky.toFixed(2)}, vis=${kvis.toFixed(4)}`);
+            }
+
             keypoints.push({
               x: Math.max(0, Math.min(1, kxOrig)),
               y: Math.max(0, Math.min(1, kyOrig)),
-              visibility: kvisSig >= 0.5 ? 2 : 0, // threshold visibility
+              visibility: kvis >= 0.5 ? 2 : 0, // threshold visibility (already 0-1)
               name: this.keypoints[k] || `keypoint_${k}`,
             });
           }

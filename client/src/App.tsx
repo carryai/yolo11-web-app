@@ -235,9 +235,10 @@ function App() {
   const handleLoadModel = useCallback(async (modelId: string) => {
     try {
       setError(null);
-      const modelData = await getModel(modelId);
+      let modelData = await getModel(modelId);
 
       if (modelData) {
+        // Load from IndexedDB
         await onnxInference.loadModel(
           modelData.blob,
           modelData.metadata.inputShape,
@@ -247,11 +248,40 @@ function App() {
         );
         setCurrentModel(modelData.metadata);
       } else {
-        setError(`Model ${modelId} not found`);
+        // Try to load from public models folder (for discovered models)
+        const response = await fetch(`/models/${modelId}.onnx`);
+        if (response.ok) {
+          const content = await response.arrayBuffer();
+
+          // Check if it's an HTML error page
+          const decoded = new TextDecoder().decode(content.slice(0, 100));
+          const isHTML = decoded.includes('<!DOCTYPE') || decoded.includes('<html');
+
+          if (isHTML) {
+            throw new Error('Model file is an HTML error page');
+          }
+
+          // Find model config from DEFAULT_MODELS or KNOWN_MODELS
+          const knownModel = DEFAULT_MODELS.find(m => m.id === modelId);
+          if (knownModel) {
+            await onnxInference.loadModel(
+              new Blob([content]),
+              knownModel.inputShape,
+              knownModel.classes,
+              knownModel.keypoints,
+              knownModel.outputShape
+            );
+            setCurrentModel(knownModel);
+          } else {
+            throw new Error(`Model ${modelId} not found in IndexedDB or public models`);
+          }
+        } else {
+          setError(`Model ${modelId} not found`);
+        }
       }
     } catch (error) {
       console.error('Failed to load model:', error);
-      setError('Failed to load model');
+      setError('Failed to load model: ' + (error instanceof Error ? error.message : 'Unknown error'));
     }
   }, [setCurrentModel, setError]);
 

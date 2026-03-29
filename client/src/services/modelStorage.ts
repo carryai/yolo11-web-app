@@ -183,7 +183,11 @@ export async function discoverAvailableModels(): Promise<ModelInfo[]> {
   for (const modelName of modelNames) {
     try {
       const config = KNOWN_MODELS[modelName];
-      const response = await fetch(`/models/${modelName}.onnx`, { method: 'HEAD' });
+      // Use GET with range header to avoid downloading full model
+      const response = await fetch(`/models/${modelName}.onnx`, {
+        method: 'HEAD',
+        cache: 'no-cache'
+      });
       if (response.ok) {
         discovered.push({
           id: modelName,
@@ -196,12 +200,16 @@ export async function discoverAvailableModels(): Promise<ModelInfo[]> {
           isDefault: modelName === 'yolo11n',
           usageCount: 0,
         });
+      } else {
+        console.log(`Model ${modelName} not found (HEAD returned ${response.status})`);
       }
-    } catch {
+    } catch (error) {
+      console.log(`Model ${modelName} not available:`, error);
       // Model not available, skip
     }
   }
 
+  console.log('Discovered models:', discovered.map(m => m.id));
   return discovered;
 }
 

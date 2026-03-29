@@ -22,7 +22,10 @@
       "Bash(curl -s \"https://raw.githubusercontent.com/carryai/drowsiness/refs/heads/main/app.js\")",
       "Bash(curl -sL https://drowsiness.carryai.co/app.js)",
       "WebSearch",
-      "WebFetch(domain:docs.ultralytics.com)"
+      "WebFetch(domain:docs.ultralytics.com)",
+      "Bash(npm install:*)",
+      "Bash(curl -s http://localhost:5173/test-pose.html)",
+      "Bash(curl -sI http://localhost:5173/models/yolo11n-pose.onnx)"
     ]
   }
 }

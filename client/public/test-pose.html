@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Pose Model Test</title>
+  <style>
+    body { font-family: sans-serif; padding: 20px; background: #1a1a1a; color: #fff; }
+    .container { max-width: 1200px; margin: 0 auto; }
+    .controls { margin-bottom: 20px; }
+    button { padding: 10px 20px; margin-right: 10px; cursor: pointer; background: #4ECDC4; border: none; border-radius: 5px; color: #000; font-weight: bold; }
+    button:hover { background: #45b7d1; }
+    button:disabled { background: #666; cursor: not-allowed; }
+    select { padding: 10px; font-size: 14px; }
+    .canvas-container { position: relative; display: inline-block; }
+    canvas { border: 2px solid #333; border-radius: 8px; }
+    #overlay { position: absolute; left: 0; top: 0; pointer-events: none; }
+    #log { background: #000; padding: 15px; border-radius: 8px; margin-top: 20px; font-family: monospace; font-size: 12px; max-height: 400px; overflow-y: auto; }
+    .error { color: #ff6b6b; }
+    .success { color: #82e0aa; }
+    .info { color: #4ecdc4; }
+    .warning { color: #f7dc6f; }
+    .stats { background: #2a2a2a; padding: 15px; border-radius: 8px; margin-top: 20px; }
+    .stats h3 { margin-top: 0; }
+    .stat-item { display: inline-block; margin-right: 30px; }
+    .stat-value { font-size: 24px; font-weight: bold; color: #4ecdc4; }
+    .stat-label { font-size: 12px; color: #888; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Pose Model Test - YOLO11n/YOLO26n Pose</h1>
+
+    <div class="controls">
+      <label>Model:
+        <select id="modelSelect">
+          <option value="yolo11n-pose.onnx">YOLO11n-pose.onnx</option>
+          <option value="yolo26n-pose.onnx">YOLO26n-pose.onnx</option>
+        </select>
+      </label>
+      <button id="loadModelBtn">Load Model</button>
+      <button id="runInferenceBtn" disabled>Run Inference</button>
+      <label>Confidence: <input type="number" id="confidenceThreshold" value="0.55" min="0" max="1" step="0.05" style="width:60px;"></label>
+    </div>
+
+    <div class="stats" id="stats" style="display:none;">
+      <h3>Statistics</h3>
+      <div class="stat-item">
+        <div class="stat-value" id="inferenceTime">-</div>
+        <div class="stat-label">Inference Time (ms)</div>
+      </div>
+      <div class="stat-item">
+        <div class="stat-value" id="detectionCount">-</div>
+        <div class="stat-label">Detections</div>
+      </div>
+      <div class="stat-item">
+        <div class="stat-value" id="maxConfidence">-</div>
+        <div class="stat-label">Max Confidence</div>
+      </div>
+    </div>
+
+    <div class="canvas-container">
+      <canvas id="canvas"></canvas>
+      <canvas id="overlay"></canvas>
+    </div>
+
+    <div id="log"></div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.17.3/dist/ort.min.js"></script>
+
+  <script>
+    const log = document.getElementById('log');
+    const canvas = document.getElementById('canvas');
+    const overlay = document.getElementById('overlay');
+    const ctx = canvas.getContext('2d');
+    const overlayCtx = overlay.getContext('2d');
+    const loadModelBtn = document.getElementById('loadModelBtn');
+    const runInferenceBtn = document.getElementById('runInferenceBtn');
+    const modelSelect = document.getElementById('modelSelect');
+    const confidenceThresholdInput = document.getElementById('confidenceThreshold');
+    const statsDiv = document.getElementById('stats');
+
+    let session = null;
+
+    const KEYPOINT_NAMES = [
+      'nose', 'left_eye', 'right_eye', 'left_ear', 'right_ear',
+      'left_shoulder', 'right_shoulder', 'left_elbow', 'right_elbow',
+      'left_wrist', 'right_wrist', 'left_hip', 'right_hip',
+      'left_knee', 'right_knee', 'left_ankle', 'right_ankle'
+    ];
+
+    const KEYPOINT_CONNECTIONS = [
+      [0, 1], [0, 2], [1, 3], [2, 4], [0, 5], [0, 6],
+      [5, 7], [7, 9], [6, 8], [8, 10], [5, 11], [6, 12],
+      [11, 13], [13, 15], [12, 14], [14, 16]
+    ];
+
+    const KEYPOINT_COLORS = [
+      '#FF6B6B', '#4ECDC4', '#4ECDC4', '#FFA07A', '#FFA07A',
+      '#45B7D1', '#45B7D1', '#98D8C8', '#98D8C8', '#F7DC6F',
+      '#F7DC6F', '#BB8FCE', '#BB8FCE', '#F1948A', '#F1948A',
+      '#82E0AA', '#82E0AA'
+    ];
+
+    function addLog(message, type = 'info') {
+      const div = document.createElement('div');
+      div.className = type;
+      div.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+      console.log(`[${type.toUpperCase()}] ${message}`);
+      log.appendChild(div);
+      log.scrollTop = log.scrollHeight;
+    }
+
+    if (ort && ort.env && ort.env.wasm) {
+      ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.17.3/dist/';
+      addLog('ONNX Runtime loaded, WASM paths configured', 'info');
+    }
+
+    async function loadModel() {
+      try {
+        loadModelBtn.disabled = true;
+        loadModelBtn.textContent = 'Loading...';
+        addLog(`Loading ${modelSelect.value}...`, 'info');
+
+        const startTime = performance.now();
+        const response = await fetch(`/models/${modelSelect.value}`);
+        if (!response.ok) throw new Error(`Failed to fetch model: ${response.status}`);
+
+        const arrayBuffer = await response.arrayBuffer();
+        addLog(`Model file loaded (${(arrayBuffer.byteLength / 1024 / 1024).toFixed(2)} MB)`, 'info');
+
+        session = await ort.InferenceSession.create(arrayBuffer, {
+          executionProviders: ['wasm', 'cpu'],
+          graphOptimizationLevel: 'all',
+        });
+
+        addLog(`Model loaded in ${(performance.now() - startTime).toFixed(0)}ms`, 'success');
+        addLog(`Input: ${session.inputNames.join(', ')}, Output: ${session.outputNames.join(', ')}`, 'info');
+
+        runInferenceBtn.disabled = false;
+        loadModelBtn.textContent = 'Model Loaded';
+      } catch (error) {
+        addLog(`Error: ${error.message}`, 'error');
+        loadModelBtn.disabled = false;
+        loadModelBtn.textContent = 'Load Model';
+      }
+    }
+
+    async function loadImage() {
+      return new Promise((resolve, reject) => {
+        const img = new Image();
+        img.onload = () => resolve(img);
+        img.onerror = () => reject(new Error('Failed to load image'));
+        img.crossOrigin = 'anonymous';
+        img.src = '/test-4-person.jpg';
+      });
+    }
+
+    function preprocessImage(image, targetSize = 640) {
+      const tempCanvas = document.createElement('canvas');
+      tempCanvas.width = targetSize;
+      tempCanvas.height = targetSize;
+      const tempCtx = tempCanvas.getContext('2d');
+
+      const scale = Math.min(targetSize / image.width, targetSize / image.height);
+      const newWidth = Math.floor(image.width * scale);
+      const newHeight = Math.floor(image.height * scale);
+      const padX = Math.floor((targetSize - newWidth) / 2);
+      const padY = Math.floor((targetSize - newHeight) / 2);
+
+      tempCtx.fillStyle = '#808080';
+      tempCtx.fillRect(0, 0, targetSize, targetSize);
+      tempCtx.drawImage(image, padX, padY, newWidth, newHeight);
+
+      const imageData = tempCtx.getImageData(0, 0, targetSize, targetSize);
+      const data = imageData.data;
+      const tensorData = new Float32Array(3 * targetSize * targetSize);
+
+      for (let y = 0; y < targetSize; y++) {
+        for (let x = 0; x < targetSize; x++) {
+          const srcIdx = (y * targetSize + x) * 4;
+          tensorData[y * targetSize + x] = data[srcIdx] / 255.0;
+          tensorData[targetSize * targetSize + y * targetSize + x] = data[srcIdx + 1] / 255.0;
+          tensorData[2 * targetSize * targetSize + y * targetSize + x] = data[srcIdx + 2] / 255.0;
+        }
+      }
+
+      return { tensor: new ort.Tensor('float32', tensorData, [1, 3, targetSize, targetSize]), scale, padX, padY };
+    }
+
+    function postprocessOutput(output, imageWidth, imageHeight, scale, padX, padY, confidenceThreshold = 0.55) {
+      const data = output.data;
+      const dims = output.dims;
+      const isTransposed = dims[1] === 56;
+      const numFeatures = isTransposed ? dims[1] : dims[2];
+      const numAnchors = isTransposed ? dims[2] : dims[1];
+      const numKeypoints = 17;
+
+      addLog(`Output: [${dims.join(', ')}], Format: ${isTransposed ? 'transposed' : 'standard'}`, 'info');
+
+      let detections = [];
+      let maxConfidenceFound = 0;
+      let debugSample = [];  // Sample confidence values
+
+      for (let i = 0; i < numAnchors; i++) {
+        let faceVisTotal = 0;
+        let maxVis = 0;
+        let faceVisDetails = [];
+
+        for (let k = 0; k < numKeypoints; k++) {
+          const kpBase = 4 + k * 3;
+          const kvisIdx = isTransposed ? (kpBase + 2) * numAnchors + i : i * numFeatures + kpBase + 2;
+          const kvis = data[kvisIdx];
+          const visSig = 1 / (1 + Math.exp(-kvis));
+          if (visSig > maxVis) maxVis = visSig;
+          if (k < 5) {
+            faceVisTotal += visSig;
+            faceVisDetails.push(visSig.toFixed(3));
+          }
+        }
+
+        const confidence = faceVisTotal / 5;  // Use average face visibility as confidence
+        if (confidence > maxConfidenceFound) maxConfidenceFound = confidence;
+
+        // Sample confidence values for debugging
+        if ([0, 100, 1000, 5000, 8399].includes(i)) {
+          debugSample.push(`a${i}:conf=${confidence.toFixed(3)}[face=${faceVisDetails.join(',')}]`);
+        }
+
+        // Skip detections with saturated visibility (all face kp ~1.0) - likely filler data
+        const isSaturated = faceVisDetails.every(v => parseFloat(v) >= 0.99);
+        if (isSaturated) continue;
+
+        if (confidence < confidenceThreshold) continue;
+
+        // Extract bbox
+        const cx = isTransposed ? data[i] : data[i * numFeatures];
+        const cy = isTransposed ? data[numAnchors + i] : data[i * numFeatures + 1];
+        const w = isTransposed ? data[2 * numAnchors + i] : data[i * numFeatures + 2];
+        const h = isTransposed ? data[3 * numAnchors + i] : data[i * numFeatures + 3];
+
+        const x1 = Math.max(0, Math.min(imageWidth, ((cx - w / 2) - padX) / scale));
+        const y1 = Math.max(0, Math.min(imageHeight, ((cy - h / 2) - padY) / scale));
+        const x2 = Math.max(0, Math.min(imageWidth, ((cx + w / 2) - padX) / scale));
+        const y2 = Math.max(0, Math.min(imageHeight, ((cy + h / 2) - padY) / scale));
+
+        // Extract keypoints
+        const keypoints = [];
+        for (let k = 0; k < numKeypoints; k++) {
+          const kpBase = 4 + k * 3;
+          const kx = isTransposed ? data[kpBase * numAnchors + i] : data[i * numFeatures + kpBase];
+          const ky = isTransposed ? data[(kpBase + 1) * numAnchors + i] : data[i * numFeatures + kpBase + 1];
+          const kvis = isTransposed ? data[(kpBase + 2) * numAnchors + i] : data[i * numFeatures + kpBase + 2];
+          const kvisSig = 1 / (1 + Math.exp(-kvis));
+
+          keypoints.push({
+            x: Math.max(0, Math.min(imageWidth, (kx - padX) / scale)),
+            y: Math.max(0, Math.min(imageHeight, (ky - padY) / scale)),
+            visibility: kvisSig >= 0.5 ? 2 : 0,
+            name: KEYPOINT_NAMES[k]
+          });
+        }
+
+        detections.push({ bbox: [x1, y1, x2, y2], confidence, keypoints });
+      }
+
+      addLog(`Confidence samples: [${debugSample.join(', ')}]`, 'info');
+      addLog(`Max confidence: ${(maxConfidenceFound * 100).toFixed(1)}%, Detections before NMS: ${detections.length}`, 'info');
+
+      // NMS
+      detections.sort((a, b) => b.confidence - a.confidence);
+      const nmsResult = [];
+      while (detections.length > 0) {
+        const current = detections.shift();
+        nmsResult.push(current);
+        detections = detections.filter(d => {
+          if (d.confidence <= 0) return false;
+          const [x1a, y1a, x2a, y2a] = current.bbox;
+          const [x1b, y1b, x2b, y2b] = d.bbox;
+          const inter = Math.max(0, Math.min(x2a, x2b) - Math.max(x1a, x1b)) * Math.max(0, Math.min(y2a, y2b) - Math.max(y1a, y1b));
+          const union = (x2a - x1a) * (y2a - y1a) + (x2b - x1b) * (y2b - y1b) - inter;
+          return inter / union < 0.45;
+        });
+      }
+
+      return { detections: nmsResult, maxConfidenceFound };
+    }
+
+    function drawResults(image, detections) {
+      canvas.width = image.width;
+      canvas.height = image.height;
+      overlay.width = image.width;
+      overlay.height = image.height;
+      ctx.drawImage(image, 0, 0);
+      overlayCtx.clearRect(0, 0, overlay.width, overlay.height);
+
+      detections.forEach(d => {
+        const [x1, y1, x2, y2] = d.bbox;
+        const color = '#4ECDC4';
+        overlayCtx.strokeStyle = color;
+        overlayCtx.lineWidth = 3;
+        overlayCtx.strokeRect(x1, y1, x2 - x1, y2 - y1);
+
+        const label = `Person ${(d.confidence * 100).toFixed(1)}%`;
+        overlayCtx.font = '16px sans-serif';
+        overlayCtx.fillStyle = color;
+        overlayCtx.fillRect(x1, y1 - 24, overlayCtx.measureText(label).width + 8, 24);
+        overlayCtx.fillStyle = '#fff';
+        overlayCtx.fillText(label, x1 + 4, y1 - 6);
+
+        // Draw keypoints
+        KEYPOINT_CONNECTIONS.forEach(([i, j]) => {
+          const kp1 = d.keypoints[i], kp2 = d.keypoints[j];
+          if (kp1.visibility >= 2 && kp2.visibility >= 2) {
+            overlayCtx.strokeStyle = KEYPOINT_COLORS[i];
+            overlayCtx.lineWidth = 2;
+            overlayCtx.beginPath();
+            overlayCtx.moveTo(kp1.x, kp1.y);
+            overlayCtx.lineTo(kp2.x, kp2.y);
+            overlayCtx.stroke();
+          }
+        });
+        d.keypoints.forEach((kp, idx) => {
+          if (kp.visibility >= 1) {
+            overlayCtx.fillStyle = KEYPOINT_COLORS[idx];
+            overlayCtx.beginPath();
+            overlayCtx.arc(kp.x, kp.y, 5, 0, Math.PI * 2);
+            overlayCtx.fill();
+          }
+        });
+      });
+    }
+
+    async function runInference() {
+      if (!session) return;
+      runInferenceBtn.disabled = true;
+      runInferenceBtn.textContent = 'Running...';
+      addLog('Starting inference...', 'info');
+
+      try {
+        const img = await loadImage();
+        addLog(`Image: ${img.width}x${img.height}`, 'success');
+
+        const { tensor, scale, padX, padY } = preprocessImage(img);
+        const startTime = performance.now();
+        const results = await session.run({ [session.inputNames[0]]: tensor });
+        const inferenceTime = performance.now() - startTime;
+
+        const output = results[session.outputNames[0]];
+        const confidenceThreshold = parseFloat(confidenceThresholdInput.value);
+        const { detections, maxConfidenceFound } = postprocessOutput(output, img.width, img.height, scale, padX, padY, confidenceThreshold);
+
+        statsDiv.style.display = 'block';
+        document.getElementById('inferenceTime').textContent = inferenceTime.toFixed(1);
+        document.getElementById('detectionCount').textContent = detections.length;
+        document.getElementById('maxConfidence').textContent = `${(maxConfidenceFound * 100).toFixed(1)}%`;
+
+        detections.forEach((d, i) => {
+          addLog(`Detection ${i + 1}: ${(d.confidence * 100).toFixed(1)}%, bbox=[${d.bbox.map(v => v.toFixed(1)).join(', ')}]`, 'info');
+        });
+
+        drawResults(img, detections);
+        addLog(`Drew ${detections.length} detections`, 'success');
+      } catch (error) {
+        addLog(`Error: ${error.message}`, 'error');
+        console.error(error);
+      } finally {
+        runInferenceBtn.disabled = false;
+        runInferenceBtn.textContent = 'Run Inference';
+      }
+    }
+
+    loadModelBtn.addEventListener('click', loadModel);
+    runInferenceBtn.addEventListener('click', runInference);
+    addLog('Ready. Click "Load Model" to begin.', 'info');
+  </script>
+</body>
+</html>
