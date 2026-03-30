@@ -2,6 +2,7 @@ import React, { useRef, useEffect } from 'react';
 import { Detection } from '../../../../shared/types';
 import { useAppStore } from '../../store/useAppStore';
 import { mjpegPlayer } from '../../services/mjpegPlayer';
+import { PoseVisualizer3D } from '../PoseVisualizer3D/PoseVisualizer3D';
 
 // COCO keypoints skeleton connections
 const KEYPOINT_CONNECTIONS: [number, number][] = [
@@ -42,10 +43,14 @@ interface VideoCanvasProps {
 }
 
 export const VideoCanvas: React.FC<VideoCanvasProps> = ({ detections, videoRef, canvasRef }) => {
-  const { settings, inputSource } = useAppStore();
+  const { settings, inputSource, updateSettings, currentModel } = useAppStore();
   const overlayCanvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const mjpegImgRef = useRef<HTMLImageElement | null>(null);
+
+  // Check if current model is a pose model (has keypoints)
+  const isPoseModel = currentModel?.keypoints && currentModel.keypoints.length > 0;
+  console.log('VideoCanvas: isPoseModel =', isPoseModel, 'currentModel =', currentModel?.name, 'keypoints =', currentModel?.keypoints?.length);
 
   // Update MJPEG image element reference when input source changes
   useEffect(() => {
@@ -197,11 +202,62 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({ detections, videoRef, 
         className={`max-w-full max-h-full object-contain ${isRTSP ? 'opacity-0' : ''}`}
       />
 
-      {/* Detection Overlay Canvas */}
-      <canvas
-        ref={overlayCanvasRef}
-        className="absolute inset-0 pointer-events-none"
-      />
+      {/* Detection Overlay Canvas OR 3D Visualization */}
+      {settings.show3DView && isPoseModel ? (
+        <div className="absolute inset-0 w-full h-full">
+          <PoseVisualizer3D
+            detections={detections}
+            modelType={settings.humanModelType}
+            estimateDepth={settings.estimate3DDepth}
+          />
+        </div>
+      ) : (
+        <canvas
+          ref={overlayCanvasRef}
+          className="absolute inset-0 pointer-events-none"
+        />
+      )}
+
+      {/* 3D View Toggle (only for pose models) */}
+      {isPoseModel && (
+        <div className="absolute top-4 left-4 z-20 flex gap-2">
+          <button
+            onClick={() => updateSettings({ show3DView: !settings.show3DView })}
+            className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
+              settings.show3DView
+                ? 'bg-accent-blue text-white'
+                : 'bg-black/50 backdrop-blur-sm text-white hover:bg-black/70'
+            }`}
+          >
+            {settings.show3DView ? '2D View' : '3D View'}
+          </button>
+          {settings.show3DView && (
+            <>
+              <select
+                value={settings.humanModelType}
+                onChange={(e) => updateSettings({ humanModelType: e.target.value as 'stick' | 'mannequin' | 'volumetric' | 'mixamo' })}
+                className="px-3 py-1.5 bg-black/50 backdrop-blur-sm text-white text-sm rounded-lg border border-border-color focus:outline-none focus:border-accent-blue"
+              >
+                <option value="stick">Stick</option>
+                <option value="mannequin">Mannequin</option>
+                <option value="volumetric">Volumetric</option>
+                <option value="mixamo">Mixamo Character</option>
+              </select>
+              <button
+                onClick={() => updateSettings({ estimate3DDepth: !settings.estimate3DDepth })}
+                className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
+                  settings.estimate3DDepth
+                    ? 'bg-accent-green text-white'
+                    : 'bg-black/50 backdrop-blur-sm text-white hover:bg-black/70'
+                }`}
+                title="Estimate depth from pose (experimental)"
+              >
+                Depth: {settings.estimate3DDepth ? 'ON' : 'OFF'}
+              </button>
+            </>
+          )}
+        </div>
+      )}
 
       {/* Placeholder when no video */}
       {!videoRef.current?.srcObject && !mjpegImgRef.current && (

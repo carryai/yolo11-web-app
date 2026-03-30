@@ -59,11 +59,19 @@ function App() {
 
       if (modelData) {
         // Load from IndexedDB
+        // Fix: Ensure pose models have keypoints even if not saved in metadata
+        let keypoints = modelData.metadata.keypoints;
+        if (!keypoints && modelData.metadata.outputShape[1] === 56) {
+          // This is a pose model (56 = 4 bbox + 17 keypoints * 3), but keypoints weren't saved
+          keypoints = ['nose', 'left_eye', 'right_eye', 'left_ear', 'right_ear', 'left_shoulder', 'right_shoulder', 'left_elbow', 'right_elbow', 'left_wrist', 'right_wrist', 'left_hip', 'right_hip', 'left_knee', 'right_knee', 'left_ankle', 'right_ankle'];
+          // Update the model metadata in store
+          modelData.metadata.keypoints = keypoints;
+        }
         await onnxInference.loadModel(
           modelData.blob,
           modelData.metadata.inputShape,
           modelData.metadata.classes,
-          modelData.metadata.keypoints,
+          keypoints,
           modelData.metadata.outputShape
         );
         setCurrentModel(modelData.metadata);
@@ -239,11 +247,19 @@ function App() {
 
       if (modelData) {
         // Load from IndexedDB
+        // Fix: Ensure pose models have keypoints even if not saved in metadata
+        let keypoints = modelData.metadata.keypoints;
+        if (!keypoints && modelData.metadata.outputShape[1] === 56) {
+          // This is a pose model (56 = 4 bbox + 17 keypoints * 3), but keypoints weren't saved
+          keypoints = ['nose', 'left_eye', 'right_eye', 'left_ear', 'right_ear', 'left_shoulder', 'right_shoulder', 'left_elbow', 'right_elbow', 'left_wrist', 'right_wrist', 'left_hip', 'right_hip', 'left_knee', 'right_knee', 'left_ankle', 'right_ankle'];
+          // Update the model metadata in store
+          modelData.metadata.keypoints = keypoints;
+        }
         await onnxInference.loadModel(
           modelData.blob,
           modelData.metadata.inputShape,
           modelData.metadata.classes,
-          modelData.metadata.keypoints,
+          keypoints,
           modelData.metadata.outputShape
         );
         setCurrentModel(modelData.metadata);

@@ -91,6 +91,68 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ onClose }) => {
             </div>
           </div>
 
+          {/* 3D Visualization Settings (for pose models) */}
+          {currentModel?.keypoints && currentModel.keypoints.length > 0 && (
+            <div>
+              <label className="block text-sm text-text-secondary mb-2">3D Visualization</label>
+              <div className="space-y-3">
+                <ToggleRow
+                  label="Enable 3D View"
+                  checked={settings.show3DView}
+                  onChange={(checked) => updateSettings({ show3DView: checked })}
+                />
+                {settings.show3DView && (
+                  <>
+                    <div>
+                      <label className="block text-xs text-text-secondary mb-1">Human Model Type</label>
+                      <div className="flex gap-2 flex-wrap">
+                        {(['stick', 'mannequin', 'volumetric', 'mixamo'] as const).map((type) => (
+                          <button
+                            key={type}
+                            onClick={() => updateSettings({ humanModelType: type as 'stick' | 'mannequin' | 'volumetric' | 'mixamo' })}
+                            className={`px-3 py-2 rounded-lg text-sm font-medium transition-colors capitalize ${
+                              settings.humanModelType === type
+                                ? 'bg-accent-blue text-white'
+                                : 'bg-bg-tertiary text-text-secondary hover:text-text-primary'
+                            }`}
+                          >
+                            {type}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    {settings.humanModelType === 'mixamo' && (
+                      <div className="p-3 bg-bg-tertiary rounded-lg">
+                        <label className="block text-xs text-text-secondary mb-1">Mixamo Model URL</label>
+                        <input
+                          type="text"
+                          placeholder="/models/character.glb"
+                          className="w-full px-3 py-2 bg-bg-secondary border border-border-color rounded-lg text-sm focus:outline-none focus:border-accent-blue"
+                          onChange={(e) => {
+                            // Store model URL in a custom data attribute or localStorage
+                            localStorage.setItem('mixamoModelUrl', e.target.value);
+                          }}
+                          defaultValue={localStorage.getItem('mixamoModelUrl') || '/models/character.glb'}
+                        />
+                        <p className="text-xs text-text-secondary mt-2">
+                          Download free characters from <a href="https://www.mixamo.com" target="_blank" rel="noopener noreferrer" className="text-accent-blue hover:underline">Mixamo.com</a>, export as .glb or .gltf, and place in client/public/models/
+                        </p>
+                      </div>
+                    )}
+                    <ToggleRow
+                      label="Estimate Depth (experimental)"
+                      checked={settings.estimate3DDepth}
+                      onChange={(checked) => updateSettings({ estimate3DDepth: checked })}
+                    />
+                    <p className="text-xs text-text-secondary">
+                      Depth estimation uses heuristics from 2D pose. For accurate 3D, use multi-view or depth sensors.
+                    </p>
+                  </>
+                )}
+              </div>
+            </div>
+          )}
+
           {/* Class Filter */}
           <div>
             <label className="block text-sm text-text-secondary mb-2">

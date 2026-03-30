@@ -61,6 +61,10 @@ export interface AppSettings {
   showConfidence: boolean;
   selectedModelId: string;
   selectedClassIds: number[]; // empty = all classes
+  // 3D visualization settings
+  show3DView: boolean;
+  humanModelType: 'stick' | 'mannequin' | 'volumetric' | 'mixamo';
+  estimate3DDepth: boolean;
 }
 
 // Stats types

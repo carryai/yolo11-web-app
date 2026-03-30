@@ -54,7 +54,13 @@ const defaultSettings: AppSettings = {
   showConfidence: true,
   selectedModelId: 'yolo11n',
   selectedClassIds: [], // empty = all classes
+  show3DView: false,
+  humanModelType: 'stick',
+  estimate3DDepth: false,
 };
+
+// Import Mixamo character model URL from settings or use default
+export const DEFAULT_MIXAMO_MODEL_URL = '/models/character.glb';
 
 const defaultStats: DetectionStats = {
   fps: 0,

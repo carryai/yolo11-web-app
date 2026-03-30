@@ -59,10 +59,26 @@ export async function getModel(id: string): Promise<{ blob: Blob; metadata: Mode
 export async function getAllModels(): Promise<ModelInfo[]> {
   const database = await getDB();
   const allModels = await database.getAll(STORE_NAME);
-  return allModels.map(m => ({
-    ...m.metadata,
-    uploadDate: m.uploadDate,
-  }));
+
+  // Backfill keypoints for pose models that were saved without them
+  const cocokeypoints = getCOCOKeypoints();
+  const modelsWithBackfilledKeypoints: ModelInfo[] = [];
+
+  for (const m of allModels) {
+    let metadata = { ...m.metadata, uploadDate: m.uploadDate };
+    // If this is a pose model (outputShape[1] === 56) but no keypoints saved, add them and update DB
+    if (!metadata.keypoints && metadata.outputShape[1] === 56) {
+      metadata.keypoints = cocokeypoints;
+      // Update the database entry to persist the keypoints
+      await database.put(STORE_NAME, {
+        ...m,
+        metadata,
+      });
+    }
+    modelsWithBackfilledKeypoints.push(metadata);
+  }
+
+  return modelsWithBackfilledKeypoints;
 }
 
 export async function deleteModel(id: string): Promise<void> {
