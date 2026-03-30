@@ -211,15 +211,18 @@ export const PoseVisualizer3D: React.FC<PoseVisualizer3DProps> = ({
     // Renderer
     const renderer = new THREE.WebGLRenderer({
       antialias: true,
-      alpha: true
+      alpha: false, // Use opaque background for better performance and no transparency issues
+      preserveDrawingBuffer: false, // Prevents trailing artifacts
+      powerPreference: 'high-performance'
     });
     renderer.setSize(width, height);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    renderer.setClearColor(0x1a1a2e, 1); // Explicitly set clear color to match scene background
 
-    // Style the canvas for proper display
-    renderer.domElement.style.cssText = 'position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: block;';
+    // Style the canvas for proper display with z-index to prevent stacking issues
+    renderer.domElement.style.cssText = 'position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: block; z-index: 1;';
 
     container.appendChild(renderer.domElement);
     rendererRef.current = renderer;
@@ -317,6 +320,8 @@ export const PoseVisualizer3D: React.FC<PoseVisualizer3DProps> = ({
         scene.rotation.y += 0.001;
       }
 
+      // Explicitly clear renderer before rendering to prevent trailing artifacts
+      renderer.clear(true, true, true); // color, depth, stencil
       renderer.render(scene, camera);
     };
 
@@ -389,7 +394,7 @@ export const PoseVisualizer3D: React.FC<PoseVisualizer3DProps> = ({
         container.removeChild(renderer.domElement);
       }
     };
-  }, [containerWidth, containerHeight, poseDetections.length]);
+  }, []); // Only initialize once - don't reinitialize on detection changes
 
   // Create or update stick figures based on detections
   useEffect(() => {
@@ -401,17 +406,67 @@ export const PoseVisualizer3D: React.FC<PoseVisualizer3DProps> = ({
     const scene = sceneRef.current;
     const numDetected = poseDetections.length;
 
-    console.log('PoseVisualizer3D: Processing', numDetected, 'pose detections, modelType:', modelType);
-
     // Calculate figure spacing
     const spacing = 2.5;
     const totalWidth = (numDetected - 1) * spacing;
     const startX = -totalWidth / 2;
 
-    // Remove figures that are no longer needed
-    const usedIds = new Set(poseDetections.map((_, i) => i));
+    // Track which figure IDs are in use to prevent duplicates
+    const usedIds = new Set<number>();
+
+    // Create or update figures for each detection
+    poseDetections.forEach((detection, index) => {
+      if (!detection.keypoints) return;
+
+      const figureId = index;
+      const xPos = startX + index * spacing;
+      const depthMap = estimateDepthFromPose(detection.keypoints);
+      usedIds.add(figureId);
+
+      if (modelType === 'mixamo') {
+        // Handle Mixamo character
+        if (!mixamoModelsRef.current.has(figureId)) {
+          // Create new Mixamo character
+          const character = new MixamoCharacter3D(
+            mixamoModelUrl,
+            () => console.log(`Mixamo character ${figureId} loaded`),
+            (error) => console.error(`Mixamo character ${figureId} error:`, error)
+          );
+          character.group.position.x = xPos;
+          mixamoModelsRef.current.set(figureId, character);
+          scene.add(character.group);
+          console.log('PoseVisualizer3D: Created Mixamo character', figureId);
+        } else {
+          // Update existing Mixamo character
+          const character = mixamoModelsRef.current.get(figureId)!;
+          if (character.group.position.x !== xPos) {
+            character.group.position.x = xPos;
+          }
+          character.update(detection.keypoints, depthMap, 0.15);
+        }
+      } else {
+        // Handle stick/mannequin/volumetric models
+        if (!figuresRef.current.has(figureId)) {
+          // Create new figure
+          const figure = createFigure(detection.keypoints, xPos, depthMap, modelType);
+          figuresRef.current.set(figureId, figure);
+          scene.add(figure.group);
+          console.log('PoseVisualizer3D: Created figure', figureId, 'of type', modelType);
+        } else {
+          // Update existing figure
+          const figure = figuresRef.current.get(figureId)!;
+          updateFigure(figure, detection.keypoints, xPos, depthMap, modelType);
+        }
+      }
+
+      // Store keypoints for next frame interpolation
+      previousKeypointsRef.current.set(figureId, [...detection.keypoints]);
+    });
+
+    // Remove figures that are no longer needed (prevents multiple person rendering issues)
     figuresRef.current.forEach((figure, id) => {
       if (!usedIds.has(id)) {
+        console.log('PoseVisualizer3D: Removing stale figure', id);
         figure.joints.forEach(joint => {
           if ((joint as THREE.Mesh).geometry) {
             (joint as THREE.Mesh).geometry.dispose();
@@ -435,48 +490,14 @@ export const PoseVisualizer3D: React.FC<PoseVisualizer3DProps> = ({
       }
     });
 
-    // Create or update figures for each detection
-    poseDetections.forEach((detection, index) => {
-      if (!detection.keypoints) return;
-
-      const figureId = index;
-      const xPos = startX + index * spacing;
-      const depthMap = estimateDepthFromPose(detection.keypoints);
-
-      if (modelType === 'mixamo') {
-        // Handle Mixamo character
-        if (!mixamoModelsRef.current.has(figureId)) {
-          // Create new Mixamo character
-          const character = new MixamoCharacter3D(
-            mixamoModelUrl,
-            () => console.log(`Mixamo character ${figureId} loaded`),
-            (error) => console.error(`Mixamo character ${figureId} error:`, error)
-          );
-          character.group.position.x = xPos;
-          mixamoModelsRef.current.set(figureId, character);
-          scene.add(character.group);
-        } else {
-          // Update existing Mixamo character
-          const character = mixamoModelsRef.current.get(figureId)!;
-          character.group.position.x = xPos;
-          character.update(detection.keypoints, depthMap, 0.15);
-        }
-      } else {
-        // Handle stick/mannequin/volumetric models
-        if (!figuresRef.current.has(figureId)) {
-          // Create new figure
-          const figure = createFigure(detection.keypoints, xPos, depthMap, modelType);
-          figuresRef.current.set(figureId, figure);
-          scene.add(figure.group);
-        } else {
-          // Update existing figure
-          const figure = figuresRef.current.get(figureId)!;
-          updateFigure(figure, detection.keypoints, xPos, depthMap, modelType);
-        }
+    // Remove stale Mixamo characters
+    mixamoModelsRef.current.forEach((character, id) => {
+      if (!usedIds.has(id)) {
+        console.log('PoseVisualizer3D: Removing stale Mixamo character', id);
+        character.dispose();
+        scene.remove(character.group);
+        mixamoModelsRef.current.delete(id);
       }
-
-      // Store keypoints for next frame interpolation
-      previousKeypointsRef.current.set(figureId, [...detection.keypoints]);
     });
   }, [poseDetections, modelType, estimateDepthFromPose, mixamoModelUrl]);
 
@@ -487,11 +508,13 @@ export const PoseVisualizer3D: React.FC<PoseVisualizer3DProps> = ({
       style={{
         width: '100%',
         height: '100%',
-        position: 'relative'
+        position: 'relative',
+        overflow: 'hidden',
+        zIndex: 0
       }}
     >
       {/* Detection count overlay */}
-      <div className="absolute top-4 left-4 z-10 bg-black/50 backdrop-blur-sm text-white px-4 py-2 rounded-lg">
+      <div className="absolute top-4 left-4 z-10 bg-black/50 backdrop-blur-sm text-white px-4 py-2 rounded-lg pointer-events-none">
         <span className="text-sm font-medium">
           {poseDetections.length} person{poseDetections.length !== 1 ? 's' : ''} detected
         </span>
@@ -501,20 +524,20 @@ export const PoseVisualizer3D: React.FC<PoseVisualizer3DProps> = ({
       </div>
 
       {/* Mode indicator */}
-      <div className="absolute top-4 left-1/2 -translate-x-1/2 z-10 bg-black/50 backdrop-blur-sm text-white px-4 py-2 rounded-lg text-xs">
+      <div className="absolute top-4 left-1/2 -translate-x-1/2 z-10 bg-black/50 backdrop-blur-sm text-white px-4 py-2 rounded-lg text-xs pointer-events-none">
         <span>Model: {modelType}</span>
         <span className="mx-2">|</span>
         <span>Mode: {estimateDepth ? '3D Estimated' : '2.5D Flat'}</span>
       </div>
 
       {/* Instructions overlay */}
-      <div className="absolute top-4 right-4 z-10 bg-black/50 backdrop-blur-sm text-white px-4 py-2 rounded-lg text-xs">
+      <div className="absolute top-4 right-4 z-10 bg-black/50 backdrop-blur-sm text-white px-4 py-2 rounded-lg text-xs pointer-events-none">
         <span>Drag: rotate | Scroll: zoom | Right-drag: pan</span>
       </div>
 
       {/* Depth estimation disclaimer */}
       {estimateDepth && (
-        <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-10 bg-black/50 backdrop-blur-sm text-white px-4 py-2 rounded-lg text-xs opacity-70">
+        <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-10 bg-black/50 backdrop-blur-sm text-white px-4 py-2 rounded-lg text-xs opacity-70 pointer-events-none">
           <span>Note: Depth is heuristically estimated from 2D pose. For accurate 3D, use multi-view or depth sensors.</span>
         </div>
       )}
@@ -554,7 +577,7 @@ function createStickFigure(
   bones: THREE.Object3D[],
   bodyParts: Map<string, THREE.Object3D>
 ): StickFigure {
-  // Create joint spheres
+  // Create joint spheres with depth sorting enabled
   keypoints.forEach((keypoint, index) => {
     const geometry = new THREE.SphereGeometry(0.08, 16, 16);
     const material = new THREE.MeshStandardMaterial({
@@ -563,11 +586,14 @@ function createStickFigure(
       roughness: 0.7,
       emissive: KEYPOINT_COLORS[index],
       emissiveIntensity: 0.2,
+      depthTest: true,
+      depthWrite: true,
     });
 
     const joint = new THREE.Mesh(geometry, material);
     joint.castShadow = true;
     joint.receiveShadow = true;
+    joint.renderOrder = 1; // Render joints after bones
 
     const x = (keypoint.x - 0.5) * 3;
     const y = -(keypoint.y - 0.5) * 3;
@@ -841,6 +867,8 @@ function createBone(pos1: THREE.Vector3, pos2: THREE.Vector3, color: string, rad
     color,
     metalness: 0.2,
     roughness: 0.8,
+    depthTest: true,
+    depthWrite: true,
   });
 
   const bone = new THREE.Mesh(geometry, material);
@@ -856,6 +884,7 @@ function createBone(pos1: THREE.Vector3, pos2: THREE.Vector3, color: string, rad
 
   bone.castShadow = true;
   bone.receiveShadow = true;
+  bone.renderOrder = 0; // Render bones before joints
 
   return bone;
 }

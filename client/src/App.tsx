@@ -7,7 +7,7 @@ import { ModelLibrary } from './components/ModelLibrary/ModelLibrary';
 import { useAppStore } from './store/useAppStore';
 import { videoInput } from './services/videoInput';
 import { onnxInference } from './services/onnxInference';
-import { getModel, DEFAULT_MODELS } from './services/modelStorage';
+import { getModel, DEFAULT_MODELS, discoverAvailableModels } from './services/modelStorage';
 import { mjpegPlayer } from './services/mjpegPlayer';
 import { DetectionLogEntry, InputSourceType } from '../../shared/types';
 
@@ -277,8 +277,13 @@ function App() {
             throw new Error('Model file is an HTML error page');
           }
 
-          // Find model config from DEFAULT_MODELS or KNOWN_MODELS
-          const knownModel = DEFAULT_MODELS.find(m => m.id === modelId);
+          // Find model config from DEFAULT_MODELS or discovered models
+          let knownModel = DEFAULT_MODELS.find(m => m.id === modelId);
+          if (!knownModel) {
+            // Try to find from discovered available models
+            const availableModels = await discoverAvailableModels();
+            knownModel = availableModels.find(m => m.id === modelId);
+          }
           if (knownModel) {
             await onnxInference.loadModel(
               new Blob([content]),
