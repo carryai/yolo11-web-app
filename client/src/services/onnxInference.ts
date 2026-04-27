@@ -243,8 +243,52 @@ export class ONNXInference {
     // For pose models: numFeatures = 56 (4 bbox + 1 obj + 17 keypoints * 3 = 4 + 1 + 51 = 56)
     // IMPORTANT: Channel 4 is objectness, keypoints start at channel 5
     // For detection models: numFeatures = 84 (4 bbox + 80 classes)
-    const numKeypoints = this.isPoseModel ? 17 : 0;
-    const numClasses = this.isPoseModel ? 1 : numFeatures - 4; // Pose models only detect 'person'
+
+    // Auto-detect actual model format by sampling output values
+    // This handles cases where model metadata doesn't match actual architecture (e.g., YOLO26-pose)
+    let detectedNumKeypoints = this.isPoseModel ? 17 : 0;
+    let detectedNumClasses = this.isPoseModel ? 1 : numFeatures - 4;
+    let requiresSigmoid = false;
+
+    if (this.isPoseModel) {
+      // Check if channel 4 contains valid confidence values (0-1 range) or raw logits
+      let channel4Min = Infinity;
+      let channel4Max = -Infinity;
+      const sampleStride = Math.max(1, Math.floor(numAnchors / 20));
+
+      for (let s = 0; s < 20 && s * sampleStride < numAnchors; s++) {
+        const idx = isTransposed ? 4 * numAnchors + s * sampleStride : s * sampleStride * numFeatures + 4;
+        const val = data[idx];
+        channel4Min = Math.min(channel4Min, val);
+        channel4Max = Math.max(channel4Max, val);
+      }
+
+      // If channel 4 values are outside 0-1 range, they need sigmoid
+      if (channel4Min < 0 || channel4Max > 1.5) {
+        requiresSigmoid = true;
+        console.log(`[Auto-detect] Channel 4 range [${channel4Min.toFixed(2)}, ${channel4Max.toFixed(2)}] - applying sigmoid`);
+      }
+
+      // Check if this might be a different pose format (e.g., YOLO26 with 55 channels: 4 bbox + 17*3 keypoints, no obj)
+      if (numFeatures === 55) {
+        detectedNumKeypoints = 17;
+        detectedNumClasses = 1;
+        console.log('[Auto-detect] YOLO26-style pose format: 55 channels (4 bbox + 51 keypoints, no objectness)');
+      }
+    }
+
+    const numKeypoints = detectedNumKeypoints;
+    const numClasses = detectedNumClasses;
+
+    // Log auto-detection results for pose models
+    if (this.isPoseModel) {
+      console.log(`[Pose Model] Format: ${numFeatures} channels, ${numAnchors} anchors, sigmoid=${requiresSigmoid}`);
+      if (numFeatures === 55) {
+        console.log('[Pose Model] YOLO26-style: 4 bbox + 51 keypoints (no objectness channel)');
+      } else if (numFeatures === 56) {
+        console.log('[Pose Model] YOLO11-style: 4 bbox + 1 obj + 51 keypoints');
+      }
+    }
 
     const predictions: Array<{
       bbox: [number, number, number, number];
@@ -266,12 +310,38 @@ export class ONNXInference {
       // Total: 4 + 1 + 51 = 56 channels
       // IMPORTANT: Objectness and keypoint visibility are ALREADY sigmoided - do NOT apply sigmoid again!
       if (this.isPoseModel) {
-        // For pose models, use objectness score (channel 4) as confidence
-        // Objectness is already in 0-1 range (already sigmoided by the model)
-        if (isTransposed) {
-          maxConfidence = data[4 * numAnchors + i]; // Channel 4 = objectness (already sigmoided)
+        // For pose models, confidence calculation depends on the format
+        if (numFeatures === 55) {
+          // YOLO26-style: 4 bbox + 17*3 keypoints (no separate objectness channel)
+          // Use average keypoint visibility as confidence proxy
+          let totalVisibility = 0;
+          let validKeypoints = 0;
+          for (let k = 0; k < 17; k++) {
+            const kpBase = 4 + k * 3; // After 4 bbox channels
+            let kvis: number;
+            if (isTransposed) {
+              kvis = data[(kpBase + 2) * numAnchors + i];
+            } else {
+              kvis = data[i * numFeatures + kpBase + 2];
+            }
+            if (requiresSigmoid) {
+              kvis = 1 / (1 + Math.exp(-kvis));
+            }
+            totalVisibility += kvis;
+            validKeypoints++;
+          }
+          maxConfidence = validKeypoints > 0 ? totalVisibility / validKeypoints : 0;
         } else {
-          maxConfidence = data[i * numFeatures + 4]; // Channel 4 = objectness (already sigmoided)
+          // Standard YOLO-pose: 4 bbox + 1 obj + 17*3 keypoints
+          if (isTransposed) {
+            maxConfidence = data[4 * numAnchors + i]; // Channel 4 = objectness
+          } else {
+            maxConfidence = data[i * numFeatures + 4]; // Channel 4 = objectness
+          }
+          // Apply sigmoid if auto-detection determined it's needed
+          if (requiresSigmoid) {
+            maxConfidence = 1 / (1 + Math.exp(-maxConfidence));
+          }
         }
         maxClassId = 0; // Only 'person' class
       } else {
@@ -344,20 +414,26 @@ export class ONNXInference {
           keypoints = [];
           for (let k = 0; k < numKeypoints; k++) {
             let kx: number, ky: number, kvis: number;
-            // For pose: 4 bbox + 1 obj + keypoints*3 (keypoints start at channel 5)
-            const kpBase = 5 + k * 3; // 4 bbox + 1 obj + 3 per keypoint
+            // For pose: keypoints start after bbox (and objectness if present)
+            // 56 channels: 4 bbox + 1 obj + 17*3 keypoints (keypoints start at channel 5)
+            // 55 channels: 4 bbox + 17*3 keypoints (keypoints start at channel 4)
+            const kpBase = (numFeatures === 55) ? 4 + k * 3 : 5 + k * 3;
 
             if (isTransposed) {
               kx = data[kpBase * numAnchors + i];
               ky = data[(kpBase + 1) * numAnchors + i];
-              kvis = data[(kpBase + 2) * numAnchors + i]; // Already sigmoided (0-1 range)
+              kvis = data[(kpBase + 2) * numAnchors + i];
             } else {
               kx = data[i * numFeatures + kpBase];
               ky = data[i * numFeatures + kpBase + 1];
-              kvis = data[i * numFeatures + kpBase + 2]; // Already sigmoided (0-1 range)
+              kvis = data[i * numFeatures + kpBase + 2];
             }
 
-            // Do NOT apply sigmoid - kvis is already in 0-1 range from the model
+            // Apply sigmoid if auto-detection determined it's needed
+            if (requiresSigmoid) {
+              kvis = 1 / (1 + Math.exp(-kvis));
+            }
+
             // Transform keypoints coordinates (same transform as bbox)
             const kxOrig = (kx - padX) / scale / srcWidth;
             const kyOrig = (ky - padY) / scale / srcHeight;

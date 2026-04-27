@@ -53,6 +53,28 @@ interface StickFigure {
   bones: THREE.Object3D[];
   bodyParts: Map<string, THREE.Object3D>; // For volumetric models
   mixamoCharacter?: MixamoCharacter3D; // For Mixamo models
+  lastSeenFrame: number; // For tracking - remove stale figures
+  centroid: { x: number; y: number }; // Track by bbox centroid for stable ID
+}
+
+/**
+ * Generate a stable ID for a detection based on its bounding box centroid
+ * This prevents figures from "teleporting" when detection order changes
+ */
+function getDetectionId(detection: Detection): string {
+  const [x1, y1, x2, y2] = detection.bbox;
+  const cx = ((x1 + x2) / 2).toFixed(3);
+  const cy = ((y1 + y2) / 2).toFixed(3);
+  return `${detection.classId}-${cx}-${cy}`;
+}
+
+/**
+ * Calculate distance between two centroids
+ */
+function centroidDistance(a: { x: number; y: number }, b: { x: number; y: number }): number {
+  const dx = a.x - b.x;
+  const dy = a.y - b.y;
+  return Math.sqrt(dx * dx + dy * dy);
 }
 
 /**
@@ -89,10 +111,10 @@ export const PoseVisualizer3D: React.FC<PoseVisualizer3DProps> = ({
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
   const controlsRef = useRef<any>(null);
-  const figuresRef = useRef<Map<number, StickFigure>>(new Map());
-  const mixamoModelsRef = useRef<Map<number, MixamoCharacter3D>>(new Map());
+  const figuresRef = useRef<Map<string, StickFigure>>(new Map());
+  const mixamoModelsRef = useRef<Map<string, MixamoCharacter3D>>(new Map());
   const animationFrameRef = useRef<number>();
-  const previousKeypointsRef = useRef<Map<number, Keypoint[]>>(new Map());
+  const previousKeypointsRef = useRef<Map<string, Keypoint[]>>(new Map());
   const [mixamoModelUrl] = useState(() =>
     localStorage.getItem('mixamoModelUrl') || '/models/character.glb'
   );
@@ -396,7 +418,7 @@ export const PoseVisualizer3D: React.FC<PoseVisualizer3DProps> = ({
     };
   }, []); // Only initialize once - don't reinitialize on detection changes
 
-  // Create or update stick figures based on detections
+  // Create or update stick figures based on detections - uses stable tracking by centroid
   useEffect(() => {
     if (!sceneRef.current) {
       console.warn('PoseVisualizer3D: No scene available for updating figures');
@@ -406,66 +428,141 @@ export const PoseVisualizer3D: React.FC<PoseVisualizer3DProps> = ({
     const scene = sceneRef.current;
     const numDetected = poseDetections.length;
 
-    // Calculate figure spacing
+    // Calculate figure spacing based on number of detections
     const spacing = 2.5;
     const totalWidth = (numDetected - 1) * spacing;
     const startX = -totalWidth / 2;
 
     // Track which figure IDs are in use to prevent duplicates
-    const usedIds = new Set<number>();
+    const usedFigureIds = new Set<string>();
 
-    // Create or update figures for each detection
-    poseDetections.forEach((detection, index) => {
-      if (!detection.keypoints) return;
+    // Match detections to existing figures by centroid proximity
+    // This prevents figures from "teleporting" when detection order changes
+    const detectionIds = poseDetections.map((d, i) => ({
+      detection: d,
+      index: i,
+      id: getDetectionId(d),
+      centroid: {
+        x: ((d.bbox[0] + d.bbox[2]) / 2),
+        y: ((d.bbox[1] + d.bbox[3]) / 2)
+      }
+    }));
 
-      const figureId = index;
-      const xPos = startX + index * spacing;
-      const depthMap = estimateDepthFromPose(detection.keypoints);
-      usedIds.add(figureId);
+    // For each detection, find the best matching existing figure
+    const figureMatches: Array<{
+      detectionId: string;
+      figureId?: string;
+      distance: number;
+      detection: Detection;
+      index: number;
+    }> = [];
 
-      if (modelType === 'mixamo') {
-        // Handle Mixamo character
-        if (!mixamoModelsRef.current.has(figureId)) {
-          // Create new Mixamo character
-          const character = new MixamoCharacter3D(
-            mixamoModelUrl,
-            () => console.log(`Mixamo character ${figureId} loaded`),
-            (error) => console.error(`Mixamo character ${figureId} error:`, error)
-          );
-          character.group.position.x = xPos;
-          mixamoModelsRef.current.set(figureId, character);
-          scene.add(character.group);
-          console.log('PoseVisualizer3D: Created Mixamo character', figureId);
-        } else {
-          // Update existing Mixamo character
-          const character = mixamoModelsRef.current.get(figureId)!;
-          if (character.group.position.x !== xPos) {
-            character.group.position.x = xPos;
-          }
-          character.update(detection.keypoints, depthMap, 0.15);
-        }
-      } else {
-        // Handle stick/mannequin/volumetric models
-        if (!figuresRef.current.has(figureId)) {
-          // Create new figure
-          const figure = createFigure(detection.keypoints, xPos, depthMap, modelType);
-          figuresRef.current.set(figureId, figure);
-          scene.add(figure.group);
-          console.log('PoseVisualizer3D: Created figure', figureId, 'of type', modelType);
-        } else {
-          // Update existing figure
-          const figure = figuresRef.current.get(figureId)!;
-          updateFigure(figure, detection.keypoints, xPos, depthMap, modelType);
+    const existingFigureIds = Array.from(figuresRef.current.keys());
+    const existingCentroids = existingFigureIds.map(id => ({
+      id,
+      centroid: figuresRef.current.get(id)!.centroid
+    }));
+
+    for (const det of detectionIds) {
+      if (!det.detection.keypoints) continue;
+
+      // Find closest existing figure
+      let bestMatch: { id: string; distance: number } | undefined;
+      for (const fig of existingCentroids) {
+        const dist = centroidDistance(det.centroid, fig.centroid);
+        if (!bestMatch || dist < bestMatch.distance) {
+          bestMatch = { id: fig.id, distance: dist };
         }
       }
 
-      // Store keypoints for next frame interpolation
-      previousKeypointsRef.current.set(figureId, [...detection.keypoints]);
+      // Use match if within threshold (0.3 = roughly 30% of image width)
+      const MATCH_THRESHOLD = 0.3;
+      if (bestMatch && bestMatch.distance < MATCH_THRESHOLD) {
+        figureMatches.push({
+          detectionId: det.id,
+          figureId: bestMatch.id,
+          distance: bestMatch.distance,
+          detection: det.detection,
+          index: det.index
+        });
+      } else {
+        // No match - will create new figure
+        figureMatches.push({
+          detectionId: det.id,
+          figureId: undefined,
+          distance: Infinity,
+          detection: det.detection,
+          index: det.index
+        });
+      }
+    }
+
+    // Update or create figures for matched detections
+    figureMatches.forEach((match, matchIndex) => {
+      const depthMap = estimateDepthFromPose(match.detection.keypoints!);
+      const xPos = startX + matchIndex * spacing;
+
+      if (match.figureId && figuresRef.current.has(match.figureId)) {
+        // Update existing figure with new position and keypoints
+        const figure = figuresRef.current.get(match.figureId)!;
+        usedFigureIds.add(match.figureId); // Track that this figure is still in use
+
+        figure.lastSeenFrame = Date.now();
+        figure.centroid = {
+          x: ((match.detection.bbox[0] + match.detection.bbox[2]) / 2),
+          y: ((match.detection.bbox[1] + match.detection.bbox[3]) / 2)
+        };
+
+        // Smoothly interpolate x position
+        const targetX = figure.group.position.x + (xPos - figure.group.position.x) * 0.3;
+        figure.group.position.x = targetX;
+
+        if (modelType === 'mixamo') {
+          const character = mixamoModelsRef.current.get(match.figureId!);
+          if (character) {
+            character.update(match.detection.keypoints!, depthMap, 0.15);
+          }
+        } else {
+          updateFigure(figure, match.detection.keypoints!, targetX, depthMap, modelType);
+        }
+
+        // Update keypoints for interpolation
+        previousKeypointsRef.current.set(match.figureId, [...match.detection.keypoints!]);
+      } else {
+        // Create new figure - find an unused ID or generate new one
+        // Reuse an old ID if available to prevent unbounded growth
+        let newFigureId: string;
+        const unusedIds = existingFigureIds.filter(id => !usedFigureIds.has(id));
+        if (unusedIds.length > 0) {
+          newFigureId = unusedIds[0];
+        } else {
+          newFigureId = `fig-${matchIndex}`;
+        }
+
+        usedFigureIds.add(newFigureId);
+
+        if (modelType === 'mixamo') {
+          const character = new MixamoCharacter3D(
+            mixamoModelUrl,
+            () => console.log(`Mixamo character ${newFigureId} loaded`),
+            (error) => console.error(`Mixamo character ${newFigureId} error:`, error)
+          );
+          character.group.position.x = xPos;
+          mixamoModelsRef.current.set(newFigureId, character);
+          scene.add(character.group);
+          console.log('PoseVisualizer3D: Created Mixamo character', newFigureId);
+        } else {
+          const figure = createFigure(match.detection.keypoints!, xPos, depthMap, modelType, match.detection);
+          figuresRef.current.set(newFigureId, figure);
+          scene.add(figure.group);
+          console.log('PoseVisualizer3D: Created figure', newFigureId, 'of type', modelType);
+        }
+      }
     });
 
     // Remove figures that are no longer needed (prevents multiple person rendering issues)
     figuresRef.current.forEach((figure, id) => {
-      if (!usedIds.has(id)) {
+      if (!usedFigureIds.has(id)) {
         console.log('PoseVisualizer3D: Removing stale figure', id);
         figure.joints.forEach(joint => {
           if ((joint as THREE.Mesh).geometry) {
@@ -492,7 +589,7 @@ export const PoseVisualizer3D: React.FC<PoseVisualizer3DProps> = ({
 
     // Remove stale Mixamo characters
     mixamoModelsRef.current.forEach((character, id) => {
-      if (!usedIds.has(id)) {
+      if (!usedFigureIds.has(id)) {
         console.log('PoseVisualizer3D: Removing stale Mixamo character', id);
         character.dispose();
         scene.remove(character.group);
@@ -550,7 +647,8 @@ function createFigure(
   keypoints: Keypoint[],
   xOffset: number,
   depthMap: Map<number, number>,
-  modelType: HumanModelType
+  modelType: HumanModelType,
+  detection?: Detection
 ): StickFigure {
   const group = new THREE.Group();
   group.position.x = xOffset;
@@ -559,12 +657,23 @@ function createFigure(
   const bones: THREE.Object3D[] = [];
   const bodyParts = new Map<string, THREE.Object3D>();
 
+  // Calculate centroid from bbox for stable tracking
+  const centroid = detection
+    ? {
+        x: ((detection.bbox[0] + detection.bbox[2]) / 2),
+        y: ((detection.bbox[1] + detection.bbox[3]) / 2)
+      }
+    : { x: xOffset, y: 0 };
+
   if (modelType === 'stick') {
-    return createStickFigure(keypoints, depthMap, group, joints, bones, bodyParts);
+    const figure = createStickFigure(keypoints, depthMap, group, joints, bones, bodyParts);
+    return { ...figure, lastSeenFrame: 0, centroid };
   } else if (modelType === 'mannequin') {
-    return createMannequinFigure(keypoints, depthMap, group, joints, bones, bodyParts);
+    const figure = createMannequinFigure(keypoints, depthMap, group, joints, bones, bodyParts);
+    return { ...figure, lastSeenFrame: 0, centroid };
   } else {
-    return createVolumetricFigure(keypoints, depthMap, group, joints, bones, bodyParts);
+    const figure = createVolumetricFigure(keypoints, depthMap, group, joints, bones, bodyParts);
+    return { ...figure, lastSeenFrame: 0, centroid };
   }
 }
 
@@ -576,7 +685,7 @@ function createStickFigure(
   joints: THREE.Object3D[],
   bones: THREE.Object3D[],
   bodyParts: Map<string, THREE.Object3D>
-): StickFigure {
+) {
   // Create joint spheres with depth sorting enabled
   keypoints.forEach((keypoint, index) => {
     const geometry = new THREE.SphereGeometry(0.08, 16, 16);
@@ -629,7 +738,7 @@ function createStickFigure(
     bones.push(bone);
   });
 
-  return { group, joints, bones, bodyParts };
+  return { group, joints, bones, bodyParts, lastSeenFrame: 0, centroid: { x: 0, y: 0 } };
 }
 
 // Create mannequin figure (simplified body volumes)
@@ -640,7 +749,7 @@ function createMannequinFigure(
   joints: THREE.Object3D[],
   bones: THREE.Object3D[],
   bodyParts: Map<string, THREE.Object3D>
-): StickFigure {
+) {
   // First create the basic skeleton
   createStickFigure(keypoints, depthMap, group, joints, bones, bodyParts);
 
@@ -713,7 +822,7 @@ function createMannequinFigure(
     bodyParts.set('head', head);
   }
 
-  return { group, joints, bones, bodyParts };
+  return { group, joints, bones, bodyParts, lastSeenFrame: 0, centroid: { x: 0, y: 0 } };
 }
 
 // Create volumetric figure (more detailed body parts)
@@ -792,7 +901,7 @@ function createVolumetricFigure(
   addLimb(12, 14, 'rightThigh', 0.08, 0xBB8FCE);
   addLimb(14, 16, 'rightShin', 0.07, 0xF1948A);
 
-  return { group, joints, bones, bodyParts };
+  return { group, joints, bones, bodyParts, lastSeenFrame: 0, centroid: { x: 0, y: 0 } };
 }
 
 // Update figure with new keypoints
